@@ -44,6 +44,14 @@ const local = {
     return ents.filter((f) => f.isFile()).map((f) =>
       path.relative(base, path.join(f.parentPath || f.path, f.name)).replaceAll('\\', '/'));
   },
+  // todos os arquivos (recursivo) de um kind — usado p/ conteúdo (texto+video)
+  async listFiles(batch, kind) {
+    const base = path.join(STORAGE_DIR, safeRel(batch), kind);
+    let ents = [];
+    try { ents = await readdir(base, { recursive: true, withFileTypes: true }); } catch { return []; }
+    return ents.filter((f) => f.isFile()).map((f) =>
+      path.relative(base, path.join(f.parentPath || f.path, f.name)).replaceAll('\\', '/'));
+  },
 };
 
 // ---- S3 -----------------------------------------------------------------
@@ -89,6 +97,18 @@ function makeS3() {
         token = r.IsTruncated ? r.NextContinuationToken : undefined;
       } while (token);
       return out;
+    },
+    async listFiles(batch, kind) {
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+      const Prefix = `${safeRel(batch)}/${kind}/`;
+      const out = [];
+      let token;
+      do {
+        const r = await (await lazy()).send(new ListObjectsV2Command({ Bucket: AWS_CONFIG.s3Bucket, Prefix, ContinuationToken: token }));
+        for (const c of r.Contents || []) out.push(c.Key.slice(Prefix.length));
+        token = r.IsTruncated ? r.NextContinuationToken : undefined;
+      } while (token);
+      return out.filter(Boolean);
     },
   };
 }

@@ -29,6 +29,7 @@ async function persist(batch, q) {
       doneCount: q.doneCount,
       pending: q.pending,
       leased: [...q.leased.entries()].map(([key, v]) => ({ key, ...v })),
+      attempts: [...q.attempts.entries()],
     };
     await writeFile(stateFile(batch), JSON.stringify(data));
   } catch { /* persistência é best-effort */ }
@@ -41,7 +42,7 @@ async function restore(batch) {
     const leasedUnits = (data.leased || []).map((l) => ({ key: l.key, num: l.num, files: l.files }))
       .filter((u) => u.files); // só se temos os arquivos persistidos
     const pending = [...leasedUnits, ...(data.pending || [])];
-    return { pending, leased: new Map(), doneCount: data.doneCount || 0, total: data.total || pending.length };
+    return { pending, leased: new Map(), doneCount: data.doneCount || 0, total: data.total || pending.length, attempts: new Map(data.attempts || []) };
   } catch { return null; }
 }
 
@@ -55,7 +56,7 @@ async function build(batch) {
     byNum.get(key).files.push({ rel: f });
   }
   const pending = [...byNum.values()].sort((a, b) => a.num - b.num || a.key.localeCompare(b.key));
-  return { pending, leased: new Map(), doneCount: 0, total: pending.length };
+  return { pending, leased: new Map(), doneCount: 0, total: pending.length, attempts: new Map() };
 }
 
 export async function ensure(batch) {
@@ -73,6 +74,30 @@ export async function lease(batch, agent, n) {
   for (const u of take) q.leased.set(u.key, { agent, at: Date.now(), num: u.num, files: u.files });
   await persist(batch, q);
   return take; // [{key,num,files}]
+}
+
+// devolve unidades leased pra frente da fila SEM penalizar (ex.: pool de sessions secou)
+export async function returnLease(batch, units) {
+  const q = await ensure(batch);
+  for (const u of units) q.leased.delete(u.key);
+  q.pending.unshift(...units);
+  await persist(batch, q);
+}
+
+// erro num número: conta a tentativa e devolve pro FIM da fila p/ retry com
+// outra session. Esgotou maxAttempts -> descarta (conta como done).
+export async function retryLease(batch, units, maxAttempts = 3) {
+  const q = await ensure(batch);
+  const requeued = [], exhausted = [];
+  for (const u of units) {
+    q.leased.delete(u.key);
+    const a = (q.attempts.get(u.key) || 0) + 1;
+    q.attempts.set(u.key, a);
+    if (a < maxAttempts) { q.pending.push(u); requeued.push(u.key); }
+    else { q.doneCount++; exhausted.push(u.key); }
+  }
+  await persist(batch, q);
+  return { requeued, exhausted };
 }
 
 // confirma que as unidades terminaram (sucesso ou parqueadas em TELEFONES ERRO)

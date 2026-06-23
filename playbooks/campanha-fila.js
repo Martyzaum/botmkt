@@ -1,23 +1,31 @@
 // =====================================================================
-//  Playbook CAMPANHA-FILA — modelo PULL em ondas.
+//  Playbook CAMPANHA-FILA — modelo PULL em ondas, com troca de sessions.
 //
-//  A fila do batch (1 número = 1 par) é consumida por TODAS as VPS em
-//  paralelo: cada VPS faz lease(16) -> roda a onda -> commit -> repete,
-//  até a fila secar. Balanceia sozinho (VPS rápida puxa mais ondas).
+//  A fila do batch (1 número = 1 par) é consumida por TODAS as VPS do
+//  tenant em paralelo: cada VPS faz lease(16) -> roda a onda -> commit,
+//  em loop, até a fila secar. Balanceia sozinho.
 //
-//  Ciclo de uma onda (por VPS):
-//    sync 16 pares -> limpar-telefones -> movimenta -> renomear
-//                  -> start-all -> tratar-erros -> commit
+//  SETUP (1x por VPS): manda o zip de sessions daquela VPS pro pool
+//  (Desktop\sessions). Cada zip vem de um upload separado por agente.
+//
+//  Ciclo de uma onda (por VPS) — sessions E telefones rodam TODA onda:
+//    sync 16 pares de telefone
+//    -> limpar-telefones + limpar-sessions       (limpa os slots)
+//    -> movimenta-sessions + renomear-sessions    (16 sessions frescas do pool)
+//    -> movimenta-numeros  + renomear-numeros     (16 números)
+//    -> start-all
+//    -> tratar-erros (telefone errado -> TELEFONES ERRO + limpa broadcast)
+//    -> commit + grava no banco
+//  Quando o pool de sessions seca, devolve os telefones à fila e para a VPS.
 //
 //  Aciona:
-//     node cli.js play campanha-fila '{"batch":"camp-2026-06-23"}'
-//  Pré-req: ter subido os telefones do batch (cli.js upload ... telefones)
-//  e as VPS já com sessions/slots prontos (setup).
+//     node cli.js play campanha-fila '{"batch":"acme-2026","tenant":"acme"}'
 //
 //  Args opcionais:
 //     tenant       processa só as VPS desse tenant (default: todas)
-//     wave         pares por onda (default 16 = um por slot)
-//     inactivity   ms sem log p/ o supervisor marcar TRAVADO (default 240000)
+//     skipSetup    true = não reenvia as sessions (pool já está na VPS)
+//     wave         pares por onda (default 16)
+//     inactivity   ms sem log p/ TRAVADO (default 240000)
 //     startTimeout ms de janela do start-all (default 2700000 = 45min)
 //     agents       lista de VPS específicas (sobrepõe tenant)
 // =====================================================================
@@ -29,73 +37,108 @@ const parseResumo = (stdout) => {
   if (!m) return null;
   try { return JSON.parse(m[1]); } catch { return null; }
 };
+// quantas sessions o movimenta-sessions moveu nesta rodada (0 = pool seco)
+const movedSessions = (stdout) => {
+  const m = (stdout || '').match(/processadas nesta rodada:\s*(\d+)/i);
+  if (m) return Number(m[1]);
+  if (/Nenhuma subpasta/i.test(stdout || '')) return 0;
+  return null; // desconhecido -> segue
+};
 
-export const meta = { name: 'campanha-fila', description: 'Consome a fila de telefones em ondas, em paralelo nas VPS' };
+export const meta = { name: 'campanha-fila', description: 'Loop pull em ondas (sessions+telefones) por tenant' };
 
-export default async function ({ agents, tenantAgents, lease, syncTelefones, commitUnits, queueStatus, recordWave, run, log, args }) {
+export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args }) {
   const batch = args.batch;
   if (!batch) throw new Error('passe o batch: play campanha-fila \'{"batch":"..."}\'');
   const WAVE = Number(args.wave || 16);
+  const maxRetries = Number(args.maxRetries || 3);
   const inactivity = Number(args.inactivity || 4 * 60 * 1000);
   const startTimeout = Number(args.startTimeout || 45 * 60 * 1000);
-  // seleção de VPS: agents explícito > tenant > todas
   const ags = args.agents && args.agents.length
     ? args.agents
     : (args.tenant ? tenantAgents(args.tenant) : agents());
   if (!ags.length) throw new Error(`nenhum agente disponível${args.tenant ? ` para o tenant '${args.tenant}'` : ''}`);
 
+  // SETUP (1x por VPS): sessions pro pool + conteúdo (texto+video) nos DADOS
+  if (!args.skipSetup) {
+    log('=== SETUP: sessions + conteúdo (1x por VPS) ===');
+    await Promise.all(ags.map(async (agent) => {
+      // sessions -> Desktop\sessions (pool)
+      try {
+        const ds = await distribute(`${batch}__${agent}`, 'sessions', { agents: [agent] });
+        for (const r of ds.results) log(`   ${agent}: sessions ${r.stdout}`);
+      } catch (e) { log(`   ${agent}: sem sessions enviadas (${e.message})`); }
+      // conteúdo -> Desktop\CONTEUDO -> espalha nos 16 DADOS
+      const sc = await syncConteudo(agent, batch);
+      if (sc.skipped) { log(`   ${agent}: sem conteúdo (texto/vídeo) enviado`); return; }
+      const r = await run(agent, node('setup-conteudo.js'));
+      log(`   ${agent}: conteúdo -> ${r.stdout ? r.stdout.trim().split(/\r?\n/).pop() : `code ${r.code}`}`);
+    }));
+  }
+
   const st0 = await queueStatus(batch);
-  log(`fila '${batch}'${args.tenant ? ` | tenant=${args.tenant}` : ''}: ${st0.pending} par(es) pendente(s) | ${ags.length} VPS (${ags.join(', ')}) | ondas de ${WAVE}`);
+  log(`fila '${batch}'${args.tenant ? ` | tenant=${args.tenant}` : ''}: ${st0.pending} par(es) | ${ags.length} VPS (${ags.join(', ')}) | ondas de ${WAVE}`);
   if (!st0.pending) { log('fila vazia — nada a fazer'); return { batch, vazio: true }; }
 
-  // loop de UMA VPS: puxa 16, roda a onda, trata erro, repete até secar
   const loopAgente = async (agent) => {
-    const acc = { agent, ondas: 0, sucesso: 0, travado: 0, erro: 0, semResumo: 0 };
+    const acc = { agent, ondas: 0, sucesso: 0, travado: 0, erro: 0, semResumo: 0, descartados: 0, poolSeco: false };
     for (;;) {
       const units = await lease(batch, agent, WAVE);
       if (!units.length) break;
-      acc.ondas++;
-      const tag = `[${agent} onda ${acc.ondas}]`;
+      const wave = acc.ondas + 1;
+      const tag = `[${agent} onda ${wave}]`;
       log(`${tag} ${units.length} par(es): ${units.map((u) => u.key).join(', ')}`);
 
-      // 1) manda os arquivos pra TELEFONES CAMPANHA da VPS
+      // 1) telefones pro TELEFONES CAMPANHA da VPS
       const sy = await syncTelefones(agent, batch, units);
       if (sy.code) log(`${tag} ⚠ sync code=${sy.code} ${sy.stderr || ''}`);
 
-      // 2) prepara os slots e roda a onda
+      // 2) limpa os slots (telefones + sessions + broadcast da onda anterior)
       await run(agent, node('limpar-telefones.js'));
+      await run(agent, node('limpar-sessions.js'));
+      await run(agent, node('limpar-broadcast.js'));
+
+      // 3) sessions frescas do pool — se secou, devolve os telefones e para
+      const ms = await run(agent, node('movimenta-sessions.js'));
+      if (movedSessions(ms.stdout) === 0) {
+        log(`${tag} ⚠ pool de sessions esgotado — devolvendo ${units.length} par(es) à fila e parando ${agent}`);
+        await returnLease(batch, units);
+        acc.poolSeco = true;
+        break;
+      }
+      await run(agent, node('renomear-sessions.js'));
+
+      // 4) números
       await run(agent, node('movimenta-numeros.js'));
       await run(agent, node('renomear-numeros.js'));
+
+      // 5) roda a onda
+      acc.ondas = wave;
       const sa = await run(agent, node('start-all.js', `$env:INACTIVITY_MS=${inactivity};`), { timeoutMs: startTimeout });
-
-      // 3) lê o veredito e trata os slots ruins
       const r = parseResumo(sa.stdout);
+
+      // 6) sucessos saem da fila; erros VOLTAM p/ retry (com outra session)
+      let okUnits, badUnits;
       if (r) {
-        acc.sucesso += r.sucesso.length;
-        acc.travado += r.travado.length;
-        acc.erro += r.erro.length;
+        const okSet = new Set(r.sucesso);
+        okUnits = units.filter((_, i) => okSet.has(i + 1));
+        badUnits = units.filter((_, i) => !okSet.has(i + 1));
+        acc.sucesso += r.sucesso.length; acc.travado += r.travado.length; acc.erro += r.erro.length;
         log(`${tag} sucesso=${r.sucesso.length} travado=[${r.travado.join(',')}] erro=[${r.erro.join(',')}]`);
-        const ruins = [...r.travado, ...r.erro];
-        if (ruins.length) {
-          await run(agent, node('tratar-erros.js', `$env:SLOTS_ERRO='${ruins.join(',')}';`));
-        }
       } else {
-        acc.semResumo++;
-        log(`${tag} ⚠ SEM RESUMO (start-all code=${sa.code})`);
+        okUnits = []; badUnits = units; acc.semResumo++;
+        log(`${tag} ⚠ SEM RESUMO (start-all code=${sa.code}) — números voltam p/ retry`);
       }
+      await commitUnits(batch, okUnits.map((u) => u.key));
+      const rr = await retryLease(batch, badUnits, maxRetries);
+      if (rr.requeued.length) log(`${tag} ↺ ${rr.requeued.length} número(s) de volta à fila p/ retry`);
+      if (rr.exhausted.length) { acc.descartados += rr.exhausted.length; log(`${tag} ✖ ${rr.exhausted.length} esgotaram ${maxRetries} tentativas`); }
 
-      // 4) confirma a onda (os números saem da fila de qualquer forma:
-      //    sucesso = enviados; erro = parqueados em TELEFONES ERRO)
-      await commitUnits(batch, units.map((u) => u.key));
-
-      // 5) grava no banco (sucessos/erros + restantes)
+      // grava a onda no banco
       const st = await queueStatus(batch);
-      recordWave({
-        tenant: args.tenant || 'default', batch, agent, wave: acc.ondas,
-        leased: units.map((u) => u.key), pendingAfter: st.pending, resumo: r,
-      });
+      recordWave({ tenant: args.tenant || 'default', batch, agent, wave, leased: units.map((u) => u.key), pendingAfter: st.pending, resumo: r });
     }
-    log(`[${agent}] fim: ${acc.ondas} onda(s) | sucesso=${acc.sucesso} travado=${acc.travado} erro=${acc.erro}`);
+    log(`[${agent}] fim: ${acc.ondas} onda(s) | sucesso=${acc.sucesso} travado=${acc.travado} erro=${acc.erro} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL DE SESSIONS SECO' : ''}`);
     return acc;
   };
 
@@ -104,6 +147,7 @@ export default async function ({ agents, tenantAgents, lease, syncTelefones, com
   const tot = resumos.reduce((a, r) => ({
     ondas: a.ondas + r.ondas, sucesso: a.sucesso + r.sucesso, travado: a.travado + r.travado, erro: a.erro + r.erro,
   }), { ondas: 0, sucesso: 0, travado: 0, erro: 0 });
-  log(`✔ fila '${batch}' drenada | pendentes=${fim.pending} | total: ${tot.ondas} ondas, sucesso=${tot.sucesso} travado=${tot.travado} erro=${tot.erro}`);
-  return { batch, resumos, total: tot, fila: fim };
+  const secou = resumos.filter((r) => r.poolSeco).map((r) => r.agent);
+  log(`✔ fim | pendentes=${fim.pending} | total: ${tot.ondas} ondas, sucesso=${tot.sucesso} travado=${tot.travado} erro=${tot.erro}${secou.length ? ` | sessions secaram em: ${secou.join(', ')}` : ''}`);
+  return { batch, resumos, total: tot, fila: fim, sessionsSecaram: secou };
 }

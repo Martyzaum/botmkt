@@ -1,5 +1,5 @@
 const fileName = 'limpar-broadcast';
-const fs = require('fs');
+import fs from 'node:fs';
 
 fs.writeFile(`${fileName}.js`, '', (err) => {
     if (err) throw err;

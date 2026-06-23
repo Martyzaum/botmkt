@@ -1,7 +1,7 @@
 // =====================================================================
-//  LIMPAR TELEFONES (versao node) — apaga o TELEFONES.txt (arquivo de
-//  trabalho do bot) dos slots, pra cada onda comecar limpa. NAO mexe
-//  no TELEFONES-XXX.txt (o par com numero no nome).
+//  LIMPAR TELEFONES (versao node) — apaga TODOS os TELEFONES*.txt do
+//  DADOS de cada slot (TELEFONES.txt de trabalho + leftovers
+//  TELEFONES-XXX / " - Copia"), pra cada onda comecar limpa.
 //
 //  Por padrao limpa os 16 slots. Pra um subconjunto:
 //    - env SLOTS_LIMPAR="1,5,7"  (ou espaco)
@@ -27,15 +27,18 @@ let slots = [
 ];
 if (!slots.length) slots = Array.from({ length: TOTAL }, (_, k) => k + 1);
 
+const patternTel = /^TELEFONES.*\.txt$/i; // TELEFONES.txt + TELEFONES-XXX(.../ - Copia).txt
+
 let apagados = 0;
 for (const i of slots) {
-  const alvo = path.join(desktop, String(i), "DADOS", "TELEFONES.txt");
-  if (fs.existsSync(alvo)) {
-    fs.rmSync(alvo, { force: true });
-    console.log(`slot ${i}: TELEFONES.txt apagado`);
+  const dados = path.join(desktop, String(i), "DADOS");
+  if (!fs.existsSync(dados)) continue;
+  for (const nome of fs.readdirSync(dados).filter((n) => patternTel.test(n))) {
+    fs.rmSync(path.join(dados, nome), { force: true });
+    console.log(`slot ${i}: ${nome} apagado`);
     apagados++;
   }
 }
 
 console.log("");
-console.log(`Slots: ${slots.join(", ")} | TELEFONES.txt apagados: ${apagados}`);
+console.log(`Slots: ${slots.join(", ")} | arquivos TELEFONES* apagados: ${apagados}`);

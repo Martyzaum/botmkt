@@ -187,6 +187,8 @@ async function runPlaybook(name, args) {
     commitUnits: (batch, keys) => workqueue.commit(batch, keys),
     queueStatus: (batch) => workqueue.status(batch),
     resetQueue: (batch) => workqueue.reset(batch),
+    returnLease: (batch, units) => workqueue.returnLease(batch, units),
+    retryLease: (batch, units, max) => workqueue.retryLease(batch, units, max),
     recordWave: (rec) => { try { return db.recordWave(rec); } catch (e) { log(`⚠ db: ${e.message}`); return null; } },
     syncTelefones: (agent, batch, units, opts = {}) =>
       enqueueAndWait(
@@ -194,6 +196,16 @@ async function runPlaybook(name, args) {
         { type: 'sync', kind: 'telefones', destFolder: 'TELEFONES CAMPANHA', batch: safeRel(batch), files: units.flatMap((u) => u.files) },
         { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
       ),
+    // conteúdo (texto + video) -> Desktop\CONTEUDO da VPS (depois setup-conteudo espalha nos DADOS)
+    syncConteudo: async (agent, batch, opts = {}) => {
+      const files = (await store.listFiles(batch, 'conteudo')).map((rel) => ({ rel }));
+      if (!files.length) return { skipped: true, stdout: '(sem conteudo)', code: 0 };
+      return enqueueAndWait(
+        agent,
+        { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files },
+        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
+      );
+    },
   };
   (async () => {
     try {
@@ -216,6 +228,8 @@ const UPLOAD_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-
   h1{font-size:20px} label{display:block;margin:14px 0 4px;font-weight:600}
   input{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box}
   input[type=file]{padding:6px}
+  textarea{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box;font:inherit}
+  hr{border:0;border-top:1px solid #e2e8f0;margin:22px 0}
   button{margin-top:20px;padding:11px 18px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
   button:disabled{opacity:.5;cursor:default}
   .row{display:flex;gap:12px} .row>div{flex:1}
@@ -224,37 +238,82 @@ const UPLOAD_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-
 </style></head><body>
 <h1>wppbot — enviar batch</h1>
 <label>Token do hub</label><input id="tok" type="password" placeholder="HUB_TOKEN">
-<label>Batch <small>(sugestão: tenant-data, ex.: acme-2026-06-23)</small></label>
-<input id="batch" placeholder="acme-2026-06-23">
 <div class="row">
-  <div><label>sessions.zip</label><input id="zsess" type="file" accept=".zip"></div>
-  <div><label>telefones.zip</label><input id="ztel" type="file" accept=".zip"></div>
+  <div><label>Tenant</label><input id="tenant" placeholder="acme"></div>
+  <div><label>Batch <small>(ex.: acme-2026-06-23)</small></label><input id="batch" placeholder="acme-2026-06-23"></div>
 </div>
+<button id="load" style="background:#475569">Carregar VPS do tenant</button>
+<div id="vps"><small>carregue as VPS para enviar 1 zip de sessions por VPS.</small></div>
+<label>Link da session</label><input id="link" placeholder="(opcional)">
+<hr>
+<label>telefones.zip</label><input id="ztel" type="file" accept=".zip">
+<hr>
+<label>Texto da campanha <small>(igual p/ TODOS os slots → DADOS/TEXTO.txt)</small></label>
+<textarea id="texto" rows="5" placeholder="mensagem que vai pra toda a campanha"></textarea>
+<label>Vídeo <small>(vai pra DADOS/VIDEO de todos os slots)</small></label>
+<input id="video" type="file" accept="video/*">
 <button id="go">Enviar</button>
 <div id="out"></div>
 <script>
 const $=id=>document.getElementById(id), out=$('out');
-$('tok').value=localStorage.getItem('hubtok')||''; $('batch').value=localStorage.getItem('batch')||'';
+$('tok').value=localStorage.getItem('hubtok')||''; $('batch').value=localStorage.getItem('batch')||''; $('tenant').value=localStorage.getItem('tenant')||'';
 function line(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent=msg;out.appendChild(d);}
-async function sendZip(batch,kind,file){
-  line('enviando '+kind+': '+file.name+' ('+(file.size/1048576).toFixed(1)+' MB)...');
-  const r=await fetch('/upload-zip?batch='+encodeURIComponent(batch)+'&kind='+kind,{
-    method:'POST',headers:{authorization:'Bearer '+$('tok').value,'content-type':'application/zip'},body:file});
+function save(){localStorage.setItem('hubtok',$('tok').value);localStorage.setItem('batch',$('batch').value.trim());localStorage.setItem('tenant',$('tenant').value.trim());}
+$('load').onclick=async()=>{
+  save();
+  const t=$('tenant').value.trim();
+  const r=await fetch('/agents'+(t?'?tenant='+encodeURIComponent(t):''),{headers:{authorization:'Bearer '+$('tok').value}});
+  const j=await r.json().catch(()=>({agents:[]}));
+  const ags=(j.agents||[]).sort((a,b)=>a.id.localeCompare(b.id));
+  if(!ags.length){$('vps').innerHTML='<small class=err>nenhuma VPS encontrada (confira token/tenant).</small>';return;}
+  $('vps').innerHTML='';
+  for(const a of ags){
+    const id=a.id, on=a.online?'online':'offline';
+    const wrap=document.createElement('div');
+    wrap.innerHTML='<label>sessions.zip de <b>'+id+'</b> <small>('+on+')</small></label>';
+    const inp=document.createElement('input');inp.type='file';inp.accept='.zip';inp.dataset.agent=id;inp.className='zsess';
+    wrap.appendChild(inp);$('vps').appendChild(wrap);
+  }
+};
+async function sendZip(batch,kind,file,agent){
+  const q='/upload-zip?batch='+encodeURIComponent(batch)+'&kind='+kind+(agent?'&agent='+encodeURIComponent(agent):'');
+  line('enviando '+kind+(agent?(' ['+agent+']'):'')+': '+file.name+' ('+(file.size/1048576).toFixed(1)+' MB)...');
+  const r=await fetch(q,{method:'POST',headers:{authorization:'Bearer '+$('tok').value,'content-type':'application/zip'},body:file});
   const j=await r.json().catch(()=>({}));
-  if(r.ok) line('OK '+kind+': '+j.files+' arquivo(s) extraido(s)','ok');
-  else line('ERRO '+kind+': '+(j.error||('HTTP '+r.status)),'err');
+  if(r.ok) line('OK '+kind+(agent?(' ['+agent+']'):'')+': '+j.files+' arquivo(s)','ok');
+  else line('ERRO '+kind+(agent?(' ['+agent+']'):'')+': '+(j.error||('HTTP '+r.status)),'err');
+}
+async function sendConteudo(batch,rel,body,label){
+  line('enviando '+label+'...');
+  const r=await fetch('/upload?batch='+encodeURIComponent(batch)+'&kind=conteudo&rel='+encodeURIComponent(rel),
+    {method:'POST',headers:{authorization:'Bearer '+$('tok').value},body});
+  const j=await r.json().catch(()=>({}));
+  if(r.ok) line('OK '+label,'ok'); else line('ERRO '+label+': '+(j.error||('HTTP '+r.status)),'err');
 }
 $('go').onclick=async()=>{
   out.innerHTML='';
   const batch=$('batch').value.trim();
   if(!batch){line('informe o batch','err');return;}
-  localStorage.setItem('hubtok',$('tok').value);localStorage.setItem('batch',batch);
+  save();
+  // monta o TEXTO.txt final: 👉🏻 link 👈🏻 + linha em branco + texto
+  const texto=$('texto').value, link=$('link').value.trim();
+  const partes=[];
+  if(link) partes.push('👉🏻 '+link+' 👈🏻');
+  if(texto.trim()) partes.push(texto);
+  const finalTexto=partes.join('\\n\\n');
+  // trava de segurança: confirma a MENSAGEM FINAL que vai pra TODA a campanha
+  if(finalTexto && !confirm('Enviar ESTA mensagem para TODA a campanha (todos os slots)?\\n\\n'+finalTexto)){ line('cancelado pelo usuário'); return; }
   $('go').disabled=true;
   try{
-    if($('zsess').files[0]) await sendZip(batch,'sessions',$('zsess').files[0]);
-    if($('ztel').files[0])  await sendZip(batch,'telefones',$('ztel').files[0]);
-    if(!$('zsess').files[0]&&!$('ztel').files[0]) line('escolha pelo menos um .zip','err');
-    else line('concluído.');
+    let enviou=false;
+    for(const inp of document.querySelectorAll('.zsess')){
+      if(inp.files[0]){ await sendZip(batch,'sessions',inp.files[0],inp.dataset.agent); enviou=true; }
+    }
+    if($('ztel').files[0]){ await sendZip(batch,'telefones',$('ztel').files[0]); enviou=true; }
+    if(finalTexto){ await sendConteudo(batch,'TEXTO.txt',finalTexto,'texto da campanha'); enviou=true; }
+    const vid=$('video').files[0];
+    if(vid){ await sendConteudo(batch,'VIDEO/'+vid.name,vid,'vídeo ('+vid.name+')'); enviou=true; }
+    line(enviou?'concluído.':'nada selecionado.', enviou?null:'err');
   }catch(e){line('erro: '+e.message,'err');}
   $('go').disabled=false;
 };
@@ -307,19 +366,22 @@ const server = http.createServer(async (req, res) => {
   // --- arquivos ---
   if (p === '/upload' && req.method === 'POST') {
     const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind'), rel = url.searchParams.get('rel');
-    if (!batch || !['sessions', 'telefones'].includes(kind) || !rel) return send(res, 400, { error: 'batch, kind(sessions|telefones) e rel obrigatórios' });
+    if (!batch || !['sessions', 'telefones', 'conteudo'].includes(kind) || !rel) return send(res, 400, { error: 'batch, kind(sessions|telefones|conteudo) e rel obrigatórios' });
     try { await store.put(batch, kind, rel, await readRaw(req)); return send(res, 200, { ok: true, rel: safeRel(rel) }); }
     catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/upload-zip' && req.method === 'POST') {
-    const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind');
+    const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind'), agent = url.searchParams.get('agent');
     if (!batch || !['sessions', 'telefones'].includes(kind)) return send(res, 400, { error: 'batch e kind(sessions|telefones) obrigatórios' });
+    if (kind === 'sessions' && !agent) return send(res, 400, { error: 'sessions exige agent (1 zip por VPS)' });
     try {
+      // sessions são por VPS: guarda num batch derivado <batch>__<agent> p/ sincronizar só àquela VPS.
+      const storageBatch = kind === 'sessions' ? `${safeRel(batch)}__${safeRel(agent)}` : batch;
       const entries = unzip(await readRaw(req));
       let n = 0;
-      for (const e of entries) { await store.put(batch, kind, e.name, e.data); n++; }
+      for (const e of entries) { await store.put(storageBatch, kind, e.name, e.data); n++; }
       if (kind === 'telefones') { try { await workqueue.reset(batch); } catch { /* fila recria no play */ } }
-      return send(res, 200, { ok: true, kind, files: n });
+      return send(res, 200, { ok: true, kind, agent: agent || null, files: n });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {
