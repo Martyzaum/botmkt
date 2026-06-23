@@ -502,7 +502,7 @@ async function sendZip(batch, kind, file, agent){
   line('enviando ' + tag + ': ' + file.name + ' (' + (file.size/1048576).toFixed(1) + ' MB)…');
   const r = await api(q, { method:'POST', headers:{ 'content-type':'application/zip' }, body:file });
   const j = await r.json().catch(() => ({}));
-  if(r.ok) line('OK ' + tag + ': ' + j.files + ' arquivo(s)', 'ok');
+  if(r.ok) line('OK ' + tag + ': ' + j.files + ' arquivo(s)' + (j.copias ? ' (+' + j.copias + ' cópia(s) criadas)' : ''), 'ok');
   else line('ERRO ' + tag + ': ' + (j.error || ('HTTP ' + r.status)), 'err');
 }
 async function sendConteudo(batch, rel, body, label, agent){

@@ -343,10 +343,28 @@ const server = http.createServer(async (req, res) => {
       // sessions são por VPS: guarda num batch derivado <batch>__<agent> p/ sincronizar só àquela VPS.
       const storageBatch = kind === 'sessions' ? `${safeRel(batch)}__${safeRel(agent)}` : batch;
       const entries = unzip(await readRaw(req));
+      // telefones: o movimenta-numeros (na VPS) só move o número se houver o PAR
+      // (TELEFONES-<n>.txt + "TELEFONES-<n> - Copia.txt"). Se o zip veio só com os
+      // originais, cria a cópia aqui pra cada um que estiver sem par.
+      let copias = 0;
+      if (kind === 'telefones') {
+        const norm = (s) => String(s).replaceAll('\\', '/');
+        const have = new Set(entries.map((e) => norm(e.name)));
+        const extra = [];
+        for (const e of entries) {
+          const name = norm(e.name), slash = name.lastIndexOf('/');
+          const dir = slash >= 0 ? name.slice(0, slash + 1) : '', base = slash >= 0 ? name.slice(slash + 1) : name;
+          const m = base.match(/^TELEFONES-(\d+)\.txt$/i);
+          if (!m) continue;
+          const copia = `${dir}TELEFONES-${m[1]} - Copia.txt`;
+          if (!have.has(copia)) { have.add(copia); extra.push({ name: copia, data: e.data }); copias++; }
+        }
+        entries.push(...extra);
+      }
       let n = 0;
       for (const e of entries) { await store.put(storageBatch, kind, e.name, e.data); n++; }
       if (kind === 'telefones') { try { await workqueue.reset(batch); } catch { /* fila recria no play */ } }
-      return send(res, 200, { ok: true, kind, agent: agent || null, files: n });
+      return send(res, 200, { ok: true, kind, agent: agent || null, files: n, copias });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {
