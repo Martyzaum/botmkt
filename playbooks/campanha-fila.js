@@ -10,13 +10,17 @@
 //
 //  Ciclo de uma onda (por VPS) — sessions E telefones rodam TODA onda:
 //    sync 16 pares de telefone
-//    -> limpar-telefones + limpar-sessions       (limpa os slots)
-//    -> movimenta-sessions + renomear-sessions    (16 sessions frescas do pool)
-//    -> movimenta-numeros  + renomear-numeros     (16 números)
+//    -> limpar-broadcast (sempre, no começo)
+//    -> limpar-telefones -> renomear-telefones -> limpar-telefones  (reset dos slots)
+//    -> limpar-sessions  (pra rotacionar; renomear-sessions pula se 'session' existe)
+//    -> movimenta-telefones
+//    -> movimenta-sessions  (se o pool secou, devolve os telefones à fila e para)
+//    -> renomear-sessions -> renomear-telefones
 //    -> start-all
-//    -> tratar-erros (telefone errado -> TELEFONES ERRO + limpa broadcast)
-//    -> commit + grava no banco
-//  Quando o pool de sessions seca, devolve os telefones à fila e para a VPS.
+//    -> commit (sucessos saem; erros voltam p/ retry → re-sync no próximo lease)
+//    -> grava no banco
+//  O retry da fila já reenvia o número que falhou; tratar-erros (descarte p/
+//  TELEFONES ERRO) NÃO é usado aqui de propósito.
 //
 //  Aciona:
 //     node cli.js play campanha-fila '{"batch":"acme-2026","tenant":"acme"}'
@@ -93,12 +97,23 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
       const sy = await syncTelefones(agent, batch, units);
       if (sy.code) log(`${tag} ⚠ sync code=${sy.code} ${sy.stderr || ''}`);
 
-      // 2) limpa os slots (telefones + sessions + broadcast da onda anterior)
+      // 2) limpeza da onda anterior:
+      //    - broadcast SEMPRE no começo (sem tratar erro condicional; o retry da
+      //      fila já reenvia os números que falharam no próximo lease).
+      //    - telefones: limpa -> renomeia (promove qualquer leftover) -> limpa de
+      //      novo, deixando os slots zerados.
+      //    - sessions: limpa pra rotacionar (renomear-sessions PULA o slot se a
+      //      pasta 'session' já existir, então sem isto reusaria a session velha).
+      await run(agent, node('limpar-broadcast.js'));
+      await run(agent, node('limpar-telefones.js'));
+      await run(agent, node('renomear-numeros.js'));
       await run(agent, node('limpar-telefones.js'));
       await run(agent, node('limpar-sessions.js'));
-      await run(agent, node('limpar-broadcast.js'));
 
-      // 3) sessions frescas do pool — se secou, devolve os telefones e para
+      // 3) move os telefones (16 pares) pros slots
+      await run(agent, node('movimenta-numeros.js'));
+
+      // 4) sessions frescas do pool — se secou, devolve os telefones e para a VPS
       const ms = await run(agent, node('movimenta-sessions.js'));
       if (movedSessions(ms.stdout) === 0) {
         log(`${tag} ⚠ pool de sessions esgotado — devolvendo ${units.length} par(es) à fila e parando ${agent}`);
@@ -106,18 +121,17 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
         acc.poolSeco = true;
         break;
       }
-      await run(agent, node('renomear-sessions.js'));
 
-      // 4) números
-      await run(agent, node('movimenta-numeros.js'));
+      // 5) renomeia sessions e telefones (deixa TELEFONES.txt + session prontos)
+      await run(agent, node('renomear-sessions.js'));
       await run(agent, node('renomear-numeros.js'));
 
-      // 5) roda a onda
+      // 6) roda a onda
       acc.ondas = wave;
       const sa = await run(agent, node('start-all.js', `$env:INACTIVITY_MS=${inactivity};`), { timeoutMs: startTimeout });
       const r = parseResumo(sa.stdout);
 
-      // 6) sucessos saem da fila; erros VOLTAM p/ retry (com outra session)
+      // 7) sucessos saem da fila; erros VOLTAM p/ retry (com outra session)
       let okUnits, badUnits;
       if (r) {
         const okSet = new Set(r.sucesso);
