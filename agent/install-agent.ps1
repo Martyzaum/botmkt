@@ -12,10 +12,10 @@
 #     então a VPS precisa de AUTO-LOGON (configurado no passo 6).
 # =====================================================================
 param(
-  [string]$HubUrl   = 'https://bot.atomoz.io',         # URL pública do hub (sem barra no fim)
-  [string]$HubToken = '483e87c578a69161bb362c736cf5eaf0a5a25404ff23e98f',
-  [string]$Tenant   = 'default',                        # tenant desta VPS
-  [string]$AgentId  = 'default-vps01',                  # ÚNICO na frota (ex.: acme-vps01)
+  [string]$HubUrl   = 'https://apibot.atomoz.io',       # API pública do hub (sem barra no fim)
+  [string]$HubToken = 'e912fb0a39667bc64e99f57ed1cc90979775a625bee9c677',
+  [string]$Tenant   = 'default',                        # tenant desta VPS = nome do usuário do painel (ex.: guilherme)
+  [string]$AgentId  = 'default-vps01',                  # ÚNICO na frota (ex.: guilherme-vps01)
   [string]$InstallDir = 'C:\wppbot-agent',
   [switch]$SetupAutoLogon                               # grava auto-logon do usuário atual (precisa -LogonPassword)
   ,[string]$LogonPassword = ''

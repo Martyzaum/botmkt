@@ -52,6 +52,14 @@ const local = {
     return ents.filter((f) => f.isFile()).map((f) =>
       path.relative(base, path.join(f.parentPath || f.path, f.name)).replaceAll('\\', '/'));
   },
+  // nomes lógicos de batch (pastas de 1º nível; tira o sufixo __<agent> das sessions)
+  async listBatches() {
+    let ents = [];
+    try { ents = await readdir(STORAGE_DIR, { withFileTypes: true }); } catch { return []; }
+    const set = new Set();
+    for (const e of ents) if (e.isDirectory()) set.add(e.name.split('__')[0]);
+    return [...set];
+  },
 };
 
 // ---- S3 -----------------------------------------------------------------
@@ -109,6 +117,17 @@ function makeS3() {
         token = r.IsTruncated ? r.NextContinuationToken : undefined;
       } while (token);
       return out.filter(Boolean);
+    },
+    async listBatches() {
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+      const set = new Set();
+      let token;
+      do {
+        const r = await (await lazy()).send(new ListObjectsV2Command({ Bucket: AWS_CONFIG.s3Bucket, Delimiter: '/', ContinuationToken: token }));
+        for (const cp of r.CommonPrefixes || []) set.add(cp.Prefix.replace(/\/$/, '').split('__')[0]);
+        token = r.IsTruncated ? r.NextContinuationToken : undefined;
+      } while (token);
+      return [...set];
     },
   };
 }

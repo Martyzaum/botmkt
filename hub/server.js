@@ -13,6 +13,7 @@ import { store, safeRel, usingS3 } from './lib/storage.js';
 import { queue, usingSqs } from './lib/queue.js';
 import * as workqueue from './lib/workqueue.js';
 import * as db from './lib/db.js';
+import * as users from './lib/auth.js';
 import { unzip } from './lib/unzip.js';
 
 const PORT = Number(process.env.HUB_PORT || 8787);
@@ -48,10 +49,32 @@ function touchAgent(id, ip, patch = {}) {
 }
 const agentView = (a) => ({ ...a, online: isOnline(a) });
 
-function auth(req) {
+const COOKIE = 'wpsid';
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+// Contexto de auth: token mestre (agentes/CLI) OU sessão de browser (cookie).
+//  kind 'token'   -> acesso total, tenant decidido pelo request (query/body).
+//  kind 'session' -> usuário logado; tenant FIXADO pela conta.
+function getAuth(req) {
   const h = req.headers['authorization'] || '';
   const tok = h.startsWith('Bearer ') ? h.slice(7) : h;
-  return tok === TOKEN;
+  if (tok && tok === TOKEN) return { ok: true, kind: 'token', tenant: null, user: null };
+  const sess = users.getSession(parseCookies(req)[COOKIE]);
+  if (sess) return { ok: true, kind: 'session', tenant: sess.tenant, user: sess };
+  return { ok: false };
+}
+// cookie Secure exceto em host local (pra testar via http no preview).
+function sessionCookie(req, token, maxAgeS) {
+  const host = req.headers.host || '';
+  const local = /^(localhost|127\.|\[?::1)/.test(host);
+  const secure = local ? '' : ' Secure;';
+  return `${COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax;${secure} Max-Age=${maxAgeS}`;
 }
 function send(res, code, obj) {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -196,15 +219,22 @@ async function runPlaybook(name, args) {
         { type: 'sync', kind: 'telefones', destFolder: 'TELEFONES CAMPANHA', batch: safeRel(batch), files: units.flatMap((u) => u.files) },
         { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
       ),
-    // conteúdo (texto + video) -> Desktop\CONTEUDO da VPS (depois setup-conteudo espalha nos DADOS)
+    // conteúdo -> Desktop\CONTEUDO da VPS (setup-conteudo espalha nos DADOS).
+    //  TEXTO.txt é POR-VPS (<batch>__<agent>/conteudo); VIDEO é global (<batch>/conteudo).
+    //  Retrocompat: se não houver TEXTO por-VPS, usa o TEXTO global (fluxo antigo).
     syncConteudo: async (agent, batch, opts = {}) => {
-      const files = (await store.listFiles(batch, 'conteudo')).map((rel) => ({ rel }));
-      if (!files.length) return { skipped: true, stdout: '(sem conteudo)', code: 0 };
-      return enqueueAndWait(
-        agent,
-        { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files },
-        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
-      );
+      const tmo = opts.timeoutMs || 10 * 60 * 1000;
+      const pvBatch = `${safeRel(batch)}__${safeRel(agent)}`;
+      const pv = await store.listFiles(pvBatch, 'conteudo');                 // por-VPS (TEXTO.txt do VPS)
+      const hasPvTexto = pv.some((r) => r.toUpperCase() === 'TEXTO.TXT');
+      const gl = (await store.listFiles(batch, 'conteudo'))                  // global (VIDEO; TEXTO legado)
+        .filter((r) => !(hasPvTexto && r.toUpperCase() === 'TEXTO.TXT'));
+      const jobs = [];
+      if (pv.length) jobs.push(enqueueAndWait(agent, { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: pvBatch, files: pv.map((rel) => ({ rel })) }, { timeoutMs: tmo }));
+      if (gl.length) jobs.push(enqueueAndWait(agent, { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files: gl.map((rel) => ({ rel })) }, { timeoutMs: tmo }));
+      if (!jobs.length) return { skipped: true, stdout: '(sem conteudo)', code: 0 };
+      const rs = await Promise.all(jobs);
+      return { code: rs.some((r) => r.code) ? 1 : 0, stdout: rs.map((r) => r.stdout).join(' | '), stderr: rs.map((r) => r.stderr).filter(Boolean).join('; ') };
     },
   };
   (async () => {
@@ -219,105 +249,9 @@ async function runPlaybook(name, args) {
   return run;
 }
 
-// ---- página de upload (HTML estático, sem auth p/ carregar) -------------
-const UPLOAD_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>wppbot — upload</title>
-<style>
-  body{font:15px system-ui,sans-serif;max-width:620px;margin:40px auto;padding:0 16px;color:#1a1a1a}
-  h1{font-size:20px} label{display:block;margin:14px 0 4px;font-weight:600}
-  input{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box}
-  input[type=file]{padding:6px}
-  textarea{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box;font:inherit}
-  hr{border:0;border-top:1px solid #e2e8f0;margin:22px 0}
-  button{margin-top:20px;padding:11px 18px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
-  button:disabled{opacity:.5;cursor:default}
-  .row{display:flex;gap:12px} .row>div{flex:1}
-  #out{margin-top:18px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px}
-  .ok{color:#15803d} .err{color:#b91c1c} small{color:#64748b}
-</style></head><body>
-<h1>wppbot — enviar batch</h1>
-<label>Token do hub</label><input id="tok" type="password" placeholder="HUB_TOKEN">
-<div class="row">
-  <div><label>Tenant</label><input id="tenant" placeholder="acme"></div>
-  <div><label>Batch <small>(ex.: acme-2026-06-23)</small></label><input id="batch" placeholder="acme-2026-06-23"></div>
-</div>
-<button id="load" style="background:#475569">Carregar VPS do tenant</button>
-<div id="vps"><small>carregue as VPS para enviar 1 zip de sessions por VPS.</small></div>
-<label>Link da session</label><input id="link" placeholder="(opcional)">
-<hr>
-<label>telefones.zip</label><input id="ztel" type="file" accept=".zip">
-<hr>
-<label>Texto da campanha <small>(igual p/ TODOS os slots → DADOS/TEXTO.txt)</small></label>
-<textarea id="texto" rows="5" placeholder="mensagem que vai pra toda a campanha"></textarea>
-<label>Vídeo <small>(vai pra DADOS/VIDEO de todos os slots)</small></label>
-<input id="video" type="file" accept="video/*">
-<button id="go">Enviar</button>
-<div id="out"></div>
-<script>
-const $=id=>document.getElementById(id), out=$('out');
-$('tok').value=localStorage.getItem('hubtok')||''; $('batch').value=localStorage.getItem('batch')||''; $('tenant').value=localStorage.getItem('tenant')||'';
-function line(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent=msg;out.appendChild(d);}
-function save(){localStorage.setItem('hubtok',$('tok').value);localStorage.setItem('batch',$('batch').value.trim());localStorage.setItem('tenant',$('tenant').value.trim());}
-$('load').onclick=async()=>{
-  save();
-  const t=$('tenant').value.trim();
-  const r=await fetch('/agents'+(t?'?tenant='+encodeURIComponent(t):''),{headers:{authorization:'Bearer '+$('tok').value}});
-  const j=await r.json().catch(()=>({agents:[]}));
-  const ags=(j.agents||[]).sort((a,b)=>a.id.localeCompare(b.id));
-  if(!ags.length){$('vps').innerHTML='<small class=err>nenhuma VPS encontrada (confira token/tenant).</small>';return;}
-  $('vps').innerHTML='';
-  for(const a of ags){
-    const id=a.id, on=a.online?'online':'offline';
-    const wrap=document.createElement('div');
-    wrap.innerHTML='<label>sessions.zip de <b>'+id+'</b> <small>('+on+')</small></label>';
-    const inp=document.createElement('input');inp.type='file';inp.accept='.zip';inp.dataset.agent=id;inp.className='zsess';
-    wrap.appendChild(inp);$('vps').appendChild(wrap);
-  }
-};
-async function sendZip(batch,kind,file,agent){
-  const q='/upload-zip?batch='+encodeURIComponent(batch)+'&kind='+kind+(agent?'&agent='+encodeURIComponent(agent):'');
-  line('enviando '+kind+(agent?(' ['+agent+']'):'')+': '+file.name+' ('+(file.size/1048576).toFixed(1)+' MB)...');
-  const r=await fetch(q,{method:'POST',headers:{authorization:'Bearer '+$('tok').value,'content-type':'application/zip'},body:file});
-  const j=await r.json().catch(()=>({}));
-  if(r.ok) line('OK '+kind+(agent?(' ['+agent+']'):'')+': '+j.files+' arquivo(s)','ok');
-  else line('ERRO '+kind+(agent?(' ['+agent+']'):'')+': '+(j.error||('HTTP '+r.status)),'err');
-}
-async function sendConteudo(batch,rel,body,label){
-  line('enviando '+label+'...');
-  const r=await fetch('/upload?batch='+encodeURIComponent(batch)+'&kind=conteudo&rel='+encodeURIComponent(rel),
-    {method:'POST',headers:{authorization:'Bearer '+$('tok').value},body});
-  const j=await r.json().catch(()=>({}));
-  if(r.ok) line('OK '+label,'ok'); else line('ERRO '+label+': '+(j.error||('HTTP '+r.status)),'err');
-}
-$('go').onclick=async()=>{
-  out.innerHTML='';
-  const batch=$('batch').value.trim();
-  if(!batch){line('informe o batch','err');return;}
-  save();
-  // monta o TEXTO.txt final: 👉🏻 link 👈🏻 + linha em branco + texto
-  const texto=$('texto').value, link=$('link').value.trim();
-  const partes=[];
-  if(link) partes.push('👉🏻 '+link+' 👈🏻');
-  if(texto.trim()) partes.push(texto);
-  const finalTexto=partes.join('\\n\\n');
-  // trava de segurança: confirma a MENSAGEM FINAL que vai pra TODA a campanha
-  if(finalTexto && !confirm('Enviar ESTA mensagem para TODA a campanha (todos os slots)?\\n\\n'+finalTexto)){ line('cancelado pelo usuário'); return; }
-  $('go').disabled=true;
-  try{
-    let enviou=false;
-    for(const inp of document.querySelectorAll('.zsess')){
-      if(inp.files[0]){ await sendZip(batch,'sessions',inp.files[0],inp.dataset.agent); enviou=true; }
-    }
-    if($('ztel').files[0]){ await sendZip(batch,'telefones',$('ztel').files[0]); enviou=true; }
-    if(finalTexto){ await sendConteudo(batch,'TEXTO.txt',finalTexto,'texto da campanha'); enviou=true; }
-    const vid=$('video').files[0];
-    if(vid){ await sendConteudo(batch,'VIDEO/'+vid.name,vid,'vídeo ('+vid.name+')'); enviou=true; }
-    line(enviou?'concluído.':'nada selecionado.', enviou?null:'err');
-  }catch(e){line('erro: '+e.message,'err');}
-  $('go').disabled=false;
-};
-</script></body></html>`;
+// ---- página de upload (HTML estático em hub/upload.html, sem auth p/ carregar) -------------
+// Carregado uma vez no boot. Editou o HTML? `docker restart botmkt` (ou reinicie o hub).
+const UPLOAD_HTML = await readFile(path.join(__dirname, 'upload.html'), 'utf8');
 
 // ---- roteamento ---------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -328,7 +262,30 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(UPLOAD_HTML);
   }
-  if (!auth(req)) return send(res, 401, { error: 'unauthorized' });
+
+  // --- login por sessão (público; agentes/CLI seguem no HUB_TOKEN) ---
+  if (p === '/auth/login' && req.method === 'POST') {
+    const b = await readBody(req);
+    const u = users.authenticate(b.username, b.password);
+    if (!u) return send(res, 401, { error: 'usuário ou senha inválidos' });
+    users.cleanupSessions();
+    const { token } = users.createSession(u.id);
+    res.setHeader('Set-Cookie', sessionCookie(req, token, Math.floor(users.SESSION_TTL_MS / 1000)));
+    return send(res, 200, { ok: true, username: u.username, tenant: u.tenant, role: u.role });
+  }
+  if (p === '/auth/me' && req.method === 'GET') {
+    const sess = users.getSession(parseCookies(req)[COOKIE]);
+    if (!sess) return send(res, 401, { error: 'não autenticado' });
+    return send(res, 200, { username: sess.username, tenant: sess.tenant, role: sess.role });
+  }
+  if (p === '/auth/logout' && req.method === 'POST') {
+    users.destroySession(parseCookies(req)[COOKIE]);
+    res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
+    return send(res, 200, { ok: true });
+  }
+
+  const A = getAuth(req);
+  if (!A.ok) return send(res, 401, { error: 'unauthorized' });
 
   // --- agente ---
   if (p === '/agent/poll' && req.method === 'POST') {
@@ -366,8 +323,11 @@ const server = http.createServer(async (req, res) => {
   // --- arquivos ---
   if (p === '/upload' && req.method === 'POST') {
     const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind'), rel = url.searchParams.get('rel');
+    const agent = url.searchParams.get('agent');
     if (!batch || !['sessions', 'telefones', 'conteudo'].includes(kind) || !rel) return send(res, 400, { error: 'batch, kind(sessions|telefones|conteudo) e rel obrigatórios' });
-    try { await store.put(batch, kind, rel, await readRaw(req)); return send(res, 200, { ok: true, rel: safeRel(rel) }); }
+    // conteúdo por-VPS (ex.: TEXTO.txt com o link daquela VPS) -> <batch>__<agent>/conteudo
+    const storeBatch = (kind === 'conteudo' && agent) ? `${safeRel(batch)}__${safeRel(agent)}` : batch;
+    try { await store.put(storeBatch, kind, rel, await readRaw(req)); return send(res, 200, { ok: true, rel: safeRel(rel), agent: agent || null }); }
     catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/upload-zip' && req.method === 'POST') {
@@ -409,22 +369,50 @@ const server = http.createServer(async (req, res) => {
     return job ? send(res, 200, job) : send(res, 404, { error: 'job desconhecido' });
   }
   if (p === '/agents' && req.method === 'GET') {
-    const tenant = url.searchParams.get('tenant');
+    // usuário logado: tenant FIXO pela conta. token mestre: tenant pelo query.
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
     let list = [...agents.values()];
     if (tenant && tenant !== 'all') list = list.filter((a) => (a.tenant || 'default') === tenant);
     return send(res, 200, { agents: list.map(agentView) });
+  }
+
+  // --- batches existentes (p/ sugerir o próximo número do dia) ---
+  if (p === '/batches' && req.method === 'GET') {
+    const prefix = url.searchParams.get('prefix') || '';
+    let all = await store.listBatches();
+    // sessão: só batches do próprio tenant (convenção <tenant>-...).
+    if (A.kind === 'session') all = all.filter((b) => b === A.tenant || b.startsWith(A.tenant + '-'));
+    if (prefix) all = all.filter((b) => b.startsWith(prefix));
+    return send(res, 200, { batches: all.sort() });
+  }
+
+  // --- usuários (admin: só via HUB_TOKEN) ---
+  if (p === '/auth/users' && req.method === 'GET') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente admin (HUB_TOKEN)' });
+    return send(res, 200, { users: users.listUsers() });
+  }
+  if (p === '/auth/users' && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente admin (HUB_TOKEN)' });
+    const b = await readBody(req);
+    try { return send(res, 200, users.addUser(b)); } catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  if (p.startsWith('/auth/users/') && req.method === 'DELETE') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente admin (HUB_TOKEN)' });
+    return send(res, 200, users.deleteUser(decodeURIComponent(p.slice('/auth/users/'.length))));
   }
 
   // --- stats (sqlite) ---
   if (p === '/stats' && req.method === 'GET') {
     const batch = url.searchParams.get('batch');
     if (!batch) return send(res, 400, { error: 'batch obrigatório' });
-    return send(res, 200, db.statsByBatch(batch, url.searchParams.get('tenant')));
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
+    return send(res, 200, db.statsByBatch(batch, tenant));
   }
   if (p === '/erros' && req.method === 'GET') {
     const batch = url.searchParams.get('batch');
     if (!batch) return send(res, 400, { error: 'batch obrigatório' });
-    return send(res, 200, { erros: db.errosByBatch(batch, url.searchParams.get('tenant')) });
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
+    return send(res, 200, { erros: db.errosByBatch(batch, tenant) });
   }
   if (p === '/waves' && req.method === 'GET') {
     const batch = url.searchParams.get('batch');

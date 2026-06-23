@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wppbot · painel de campanhas</title>
+<style>
+  :root{
+    --bg1:#eef2ff; --bg2:#e2e8f0;
+    --surface:#ffffff; --surface-2:#f8fafc;
+    --text:#0f172a; --muted:#64748b; --faint:#94a3b8;
+    --border:#e2e8f0; --border-strong:#cbd5e1;
+    --brand:#4f46e5; --brand-2:#2563eb; --brand-weak:#eef2ff;
+    --ok:#15803d; --ok-bg:#dcfce7; --err:#b91c1c; --err-bg:#fee2e2;
+    --warn:#b45309; --warn-bg:#fef3c7;
+    --ring:rgba(79,70,229,.35);
+    --shadow:0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.06);
+    --radius:16px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg1:#0b1020; --bg2:#0f172a;
+      --surface:#111827; --surface-2:#0f172a;
+      --text:#e5e7eb; --muted:#94a3b8; --faint:#64748b;
+      --border:#1f2937; --border-strong:#334155;
+      --brand:#818cf8; --brand-2:#60a5fa; --brand-weak:#1e1b4b;
+      --ok:#4ade80; --ok-bg:#052e16; --err:#f87171; --err-bg:#450a0a;
+      --warn:#fbbf24; --warn-bg:#451a03;
+      --ring:rgba(129,140,248,.4);
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.4);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; color:var(--text);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:
+      radial-gradient(1200px 600px at 100% -10%, var(--bg1), transparent 60%),
+      radial-gradient(1000px 500px at -10% 110%, var(--bg1), transparent 55%),
+      var(--bg2);
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1140px;margin:0 auto;padding:28px 20px 130px}
+
+  /* ── board de 2 colunas ─────────────────────────────── */
+  .board{display:flex;gap:18px;align-items:flex-start}
+  .col{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+  .col.wide{flex:1.25}
+  .col .card{margin-bottom:0}
+  @media (max-width:880px){ .board{flex-direction:column;gap:16px} }
+
+  /* ── topbar ─────────────────────────────────────────── */
+  header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}
+  .brand{display:flex;align-items:center;gap:13px}
+  .logo{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;color:#fff;
+    background:linear-gradient(135deg,var(--brand),var(--brand-2));box-shadow:var(--shadow)}
+  .brand h1{font-size:21px;margin:0;letter-spacing:-.02em}
+  .brand p{margin:1px 0 0;color:var(--muted);font-size:13px}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+    padding:6px 12px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--muted)}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+  .pill.ok{color:var(--ok);background:var(--ok-bg);border-color:transparent}
+  .pill.ok .dot{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
+  .pill.err{color:var(--err);background:var(--err-bg);border-color:transparent}
+  .pill.err .dot{background:var(--err)}
+
+  /* ── cards ──────────────────────────────────────────── */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:20px 22px;margin-bottom:16px}
+  .card-h{display:flex;align-items:flex-start;gap:13px;margin-bottom:16px}
+  .step{flex:none;width:28px;height:28px;border-radius:9px;display:grid;place-items:center;
+    font-size:14px;font-weight:700;color:var(--brand);background:var(--brand-weak)}
+  .card-h h2{font-size:16px;margin:0;letter-spacing:-.01em}
+  .card-h .hint{margin:2px 0 0;color:var(--muted);font-size:13px}
+
+  /* ── form ───────────────────────────────────────────── */
+  .field{margin-bottom:14px}
+  .field:last-child{margin-bottom:0}
+  label.lbl{display:block;font-weight:600;font-size:13.5px;margin-bottom:6px}
+  .opt{font-weight:500;color:var(--faint);font-size:12px}
+  .sub{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+  input[type=text],input[type=password],input:not([type]),textarea{
+    width:100%;padding:11px 13px;border:1px solid var(--border-strong);border-radius:11px;
+    background:var(--surface-2);color:var(--text);font:inherit;transition:border-color .15s,box-shadow .15s}
+  textarea{resize:vertical;min-height:96px}
+  input:focus,textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 4px var(--ring)}
+  input::placeholder,textarea::placeholder{color:var(--faint)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:520px){.grid2{grid-template-columns:1fr}}
+
+  /* ── botões ─────────────────────────────────────────── */
+  .btn{appearance:none;border:0;cursor:pointer;font:inherit;font-weight:650;
+    border-radius:12px;padding:12px 18px;transition:transform .06s,box-shadow .15s,background .15s,opacity .15s}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.55;cursor:default}
+  .btn-secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--border-strong);width:100%}
+  .btn-secondary:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+  .btn-primary{width:100%;font-size:15.5px;color:#fff;
+    background:linear-gradient(135deg,var(--brand),var(--brand-2));
+    box-shadow:0 6px 18px color-mix(in srgb,var(--brand) 35%,transparent)}
+  .btn-primary:hover:not(:disabled){box-shadow:0 10px 26px color-mix(in srgb,var(--brand) 45%,transparent)}
+
+  /* ── dropzones (file) ───────────────────────────────── */
+  .drop{display:flex;align-items:center;gap:13px;width:100%;cursor:pointer;
+    padding:14px 16px;border:1.5px dashed var(--border-strong);border-radius:13px;
+    background:var(--surface-2);transition:border-color .15s,background .15s}
+  .drop:hover{border-color:var(--brand);background:var(--brand-weak)}
+  .drop.has{border-style:solid;border-color:var(--brand)}
+  .drop .ic{flex:none;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+    color:var(--brand);background:var(--brand-weak)}
+  .drop .txt{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .drop .t1{font-weight:600;font-size:14px}
+  .drop .t2{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drop input[type=file]{display:none}
+
+  /* ── lista de VPS ───────────────────────────────────── */
+  .vps-empty{color:var(--muted);font-size:13.5px;padding:14px;border:1px dashed var(--border);
+    border-radius:12px;text-align:center;background:var(--surface-2)}
+  .vps-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+  .vps-row .drop{align-items:center}
+  .vps-tag{flex:none;display:inline-flex;align-items:center;gap:7px;font-weight:700;font-size:13.5px}
+  .vps-tag .sdot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+  .vps-tag.on .sdot{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  .vps-state{font-size:11.5px;font-weight:600;color:var(--faint)}
+  .vps-tag.on .vps-state{color:var(--ok)}
+  /* card de VPS: cabeçalho + dropzone do zip + input de link */
+  .vps-card{border:1px solid var(--border);border-radius:13px;background:var(--surface-2);
+    padding:11px;display:flex;flex-direction:column;gap:9px}
+  .vps-card .drop{background:var(--surface);padding:11px 13px}
+  .vps-head{display:flex;align-items:center}
+  .vps-link{width:100%;padding:9px 11px;border:1px solid var(--border-strong);border-radius:10px;
+    background:var(--surface);color:var(--text);font:inherit;font-size:13px}
+  .vps-link::placeholder{color:var(--faint)}
+  .vps-link:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--ring)}
+
+  /* ── barra de ação + console ────────────────────────── */
+  .actionbar{position:fixed;left:0;right:0;bottom:0;padding:14px 18px calc(14px + env(safe-area-inset-bottom));
+    background:color-mix(in srgb,var(--bg2) 86%,transparent);backdrop-filter:blur(10px);
+    border-top:1px solid var(--border)}
+  .actionbar .inner{max-width:1140px;margin:0 auto;display:flex}
+  .actionbar .btn-primary{width:100%}
+  @media (min-width:880px){ .actionbar .btn-primary{width:auto;min-width:320px;margin-left:auto} }
+  #out{margin-top:14px;border-radius:13px;border:1px solid var(--border);overflow:hidden;
+    font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  #out[hidden]{display:none}
+  #out .head{display:flex;align-items:center;gap:8px;padding:9px 13px;background:var(--surface-2);
+    border-bottom:1px solid var(--border);font-weight:600;font-size:12px;color:var(--muted);
+    font-family:system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase}
+  #out .body{padding:11px 13px;max-height:260px;overflow:auto;background:var(--surface)}
+  #out .ln{display:flex;gap:8px;padding:2px 0;color:var(--text)}
+  #out .ln::before{content:"›";color:var(--faint)}
+  #out .ln.ok{color:var(--ok)} #out .ln.ok::before{content:"✓";color:var(--ok)}
+  #out .ln.err{color:var(--err)} #out .ln.err::before{content:"✗";color:var(--err)}
+
+  /* ── login + conta ──────────────────────────────────── */
+  [hidden]{display:none !important}
+  .login-wrap{max-width:410px;margin:7vh auto 0}
+  .login-card{padding:26px 24px}
+  .login-head{text-align:center;margin-bottom:18px}
+  .login-head .logo{width:52px;height:52px;border-radius:14px;margin:0 auto 12px}
+  .login-head h2{margin:0;font-size:19px;letter-spacing:-.01em}
+  .login-head .hint{margin:3px 0 0;color:var(--muted);font-size:13px}
+  .login-err{margin:2px 0 12px;color:var(--err);background:var(--err-bg);border-radius:10px;padding:9px 12px;font-size:13px}
+  .btn-ghost{background:transparent;border:1px solid var(--border-strong);color:var(--muted);padding:8px 14px}
+  .btn-ghost:hover:not(:disabled){color:var(--err);border-color:var(--err)}
+  .acct{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;
+    padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)}
+  .acct .who{font-weight:700;font-size:14px}
+  .acct .ten{display:inline-block;margin-left:8px;font-size:11.5px;font-weight:600;color:var(--brand);
+    background:var(--brand-weak);padding:2px 9px;border-radius:999px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/>
+        </svg>
+      </div>
+      <div>
+        <h1>wppbot</h1>
+        <p>Painel de campanhas</p>
+      </div>
+    </div>
+    <div id="conn" class="pill"><span class="dot"></span><span id="conn-t">desconectado</span></div>
+  </header>
+
+  <!-- tela de login (some quando autenticado) -->
+  <div id="login" class="login-wrap" hidden>
+    <section class="card login-card">
+      <div class="login-head">
+        <div class="logo">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h2>Entrar</h2>
+        <p class="hint">acesse o painel de campanhas</p>
+      </div>
+      <div class="field"><label class="lbl" for="lg-user">Usuário</label><input id="lg-user" autocomplete="username" placeholder="seu usuário"></div>
+      <div class="field"><label class="lbl" for="lg-pass">Senha</label><input id="lg-pass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <div id="lg-err" class="login-err" hidden></div>
+      <button id="lg-go" class="btn btn-primary" style="width:100%">Entrar</button>
+    </section>
+  </div>
+
+  <div class="board" id="board" hidden>
+  <div class="col wide">
+  <!-- 1. conta + lote -->
+  <section class="card">
+    <div class="card-h">
+      <span class="step">1</span>
+      <div><h2>Campanha</h2><p class="hint">conta conectada e o lote a enviar</p></div>
+    </div>
+    <div class="acct">
+      <div><span class="who" id="who">—</span><span class="ten" id="who-tenant">tenant</span></div>
+      <button id="logout" class="btn btn-ghost">Sair</button>
+    </div>
+    <div class="field">
+      <label class="lbl" for="batch">Batch</label>
+      <input id="batch" placeholder="acme-2026-06-23">
+      <span class="sub">ex.: acme-2026-06-23</span>
+    </div>
+    <button id="load" class="btn btn-secondary">Carregar VPS</button>
+  </section>
+
+  <!-- 2. sessions -->
+  <section class="card">
+    <div class="card-h">
+      <span class="step">2</span>
+      <div><h2>Sessions por VPS</h2><p class="hint">por VPS: um <code>sessions.zip</code> + o link (vai no <code>TEXTO.txt</code> daquela VPS)</p></div>
+    </div>
+    <div id="vps"><div class="vps-empty">Carregue as VPS para enviar 1 zip + 1 link por VPS.</div></div>
+  </section>
+
+  </div><!-- /col wide -->
+  <div class="col">
+  <!-- 3. telefones -->
+  <section class="card">
+    <div class="card-h">
+      <span class="step">3</span>
+      <div><h2>Telefones</h2><p class="hint">um único <code>telefones.zip</code> da campanha</p></div>
+    </div>
+    <label class="drop" id="ztel-drop" for="ztel">
+      <span class="ic">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </span>
+      <span class="txt"><span class="t1">Selecionar telefones.zip</span><span class="t2" id="ztel-name">nenhum arquivo selecionado</span></span>
+      <input id="ztel" type="file" accept=".zip">
+    </label>
+  </section>
+
+  <!-- 4. conteúdo -->
+  <section class="card">
+    <div class="card-h">
+      <span class="step">4</span>
+      <div><h2>Conteúdo da campanha</h2><p class="hint">texto base p/ todas; o link entra por VPS · vídeo é global</p></div>
+    </div>
+    <div class="field">
+      <label class="lbl" for="texto">Texto base da campanha</label>
+      <textarea id="texto" rows="5" placeholder="mensagem base (o link de cada VPS entra acima dela)"></textarea>
+      <span class="sub">o TEXTO.txt de cada VPS = 👉🏻 link-da-VPS 👈🏻 + este texto base</span>
+    </div>
+    <label class="drop" id="video-drop" for="video">
+      <span class="ic">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      </span>
+      <span class="txt"><span class="t1">Selecionar vídeo</span><span class="t2" id="video-name">vai pra DADOS/VIDEO de todos os slots</span></span>
+      <input id="video" type="file" accept="video/*">
+    </label>
+  </section>
+
+  </div><!-- /col -->
+  </div><!-- /board -->
+
+  <div id="out" hidden><div class="head">Log</div><div class="body"></div></div>
+</div>
+
+<div class="actionbar" id="bar" hidden>
+  <div class="inner">
+    <button id="go" class="btn btn-primary">Enviar campanha</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const outBox = $('out'), outBody = outBox.querySelector('.body');
+const api = (path, opts) => fetch(path, { credentials: 'same-origin', ...(opts || {}) });
+
+// ── persistência (só o batch; token/tenant agora vêm do login) ──
+$('batch').value = localStorage.getItem('batch') || '';
+function save(){ localStorage.setItem('batch', $('batch').value.trim()); }
+
+// ── log ───────────────────────────────────────────────
+function line(msg, cls){
+  outBox.hidden = false;
+  const d = document.createElement('div');
+  d.className = 'ln' + (cls ? ' ' + cls : '');
+  d.textContent = msg;
+  outBody.appendChild(d);
+  outBody.scrollTop = outBody.scrollHeight;
+}
+function clearLog(){ outBody.innerHTML = ''; outBox.hidden = true; }
+
+// ── pill de conexão ───────────────────────────────────
+function setConn(state, text){
+  const el = $('conn');
+  el.className = 'pill' + (state ? ' ' + state : '');
+  $('conn-t').textContent = text;
+}
+
+// ── feedback de arquivo escolhido ─────────────────────
+function wireFile(inputId, nameId, dropId, emptyTxt){
+  const inp = $(inputId), nm = $(nameId), drop = $(dropId);
+  inp.addEventListener('change', () => {
+    const f = inp.files[0];
+    if(f){ nm.textContent = f.name + ' · ' + (f.size/1048576).toFixed(1) + ' MB'; drop.classList.add('has'); }
+    else { nm.textContent = emptyTxt; drop.classList.remove('has'); }
+  });
+}
+wireFile('ztel','ztel-name','ztel-drop','nenhum arquivo selecionado');
+wireFile('video','video-name','video-drop','vai pra DADOS/VIDEO de todos os slots');
+
+// ── login / sessão ────────────────────────────────────
+let TENANT = '';
+// sugere <tenant>-<AAAA-MM-DD>-N com N = próximo livre do dia (consulta o servidor).
+async function nextBatch(tenant){
+  const base = tenant + '-' + new Date().toISOString().slice(0,10);
+  let max = 0;
+  try{
+    const r = await api('/batches?prefix=' + encodeURIComponent(base));
+    if(r.ok){
+      for(const b of ((await r.json()).batches || [])){
+        if(b === base){ max = Math.max(max, 1); continue; }
+        if(b.startsWith(base + '-')){ const m = b.slice(base.length + 1).match(/^(\d+)$/); if(m) max = Math.max(max, parseInt(m[1], 10)); }
+      }
+    }
+  }catch(e){}
+  return base + '-' + (max + 1);
+}
+function showLogin(){ $('login').hidden = false; $('board').hidden = true; $('bar').hidden = true; setConn('', 'desconectado'); }
+async function showApp(me){
+  $('login').hidden = true; $('board').hidden = false; $('bar').hidden = false;
+  TENANT = me.tenant;
+  $('who').textContent = me.username;
+  $('who-tenant').textContent = me.tenant;
+  setConn('ok', 'conectado');
+  $('batch').value = await nextBatch(me.tenant);
+}
+async function whoami(){ try{ const r = await api('/auth/me'); if(r.ok) return await r.json(); }catch(e){} return null; }
+
+$('lg-go').onclick = async () => {
+  const err = $('lg-err'); err.hidden = true;
+  const username = $('lg-user').value.trim(), password = $('lg-pass').value;
+  if(!username || !password){ err.textContent = 'informe usuário e senha'; err.hidden = false; return; }
+  $('lg-go').disabled = true;
+  try{
+    const r = await api('/auth/login', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ username, password }) });
+    const j = await r.json().catch(() => ({}));
+    if(r.ok){ $('lg-pass').value = ''; await showApp(j); }
+    else { err.textContent = j.error || ('HTTP ' + r.status); err.hidden = false; }
+  }catch(e){ err.textContent = 'erro: ' + e.message; err.hidden = false; }
+  finally{ $('lg-go').disabled = false; }
+};
+$('lg-pass').addEventListener('keydown', e => { if(e.key === 'Enter') $('lg-go').click(); });
+$('lg-user').addEventListener('keydown', e => { if(e.key === 'Enter') $('lg-pass').focus(); });
+
+$('logout').onclick = async () => {
+  try{ await api('/auth/logout', { method:'POST' }); }catch(e){}
+  $('vps').innerHTML = '<div class="vps-empty">Carregue as VPS para enviar 1 zip de sessions por VPS.</div>';
+  clearLog(); showLogin();
+};
+
+// ── carregar VPS (o tenant vem da sessão, no servidor) ─
+$('load').onclick = async () => {
+  save();
+  $('load').disabled = true;
+  setConn('', 'carregando…');
+  try{
+    const r = await api('/agents');
+    if(r.status === 401){ showLogin(); return; }
+    const j = await r.json().catch(() => ({ agents: [] }));
+    const ags = (j.agents || []).sort((a,b) => a.id.localeCompare(b.id));
+    if(!ags.length){
+      setConn('err', 'sem VPS');
+      $('vps').innerHTML = '<div class="vps-empty">Nenhuma VPS encontrada para este tenant.</div>';
+      return;
+    }
+    const online = ags.filter(a => a.online).length;
+    setConn('ok', online + '/' + ags.length + ' VPS online');
+    const grid = document.createElement('div');
+    grid.className = 'vps-grid';
+    for(const a of ags){
+      const on = !!a.online;
+      const row = document.createElement('div');
+      row.className = 'vps-card';
+      row.innerHTML =
+        '<div class="vps-head"><span class="vps-tag ' + (on?'on':'') + '"><span class="sdot"></span>' + a.id +
+          ' <span class="vps-state">' + (on?'online':'offline') + '</span></span></div>' +
+        '<label class="drop" for="z-' + a.id + '">' +
+          '<span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>' +
+          '<span class="txt"><span class="t1">sessions.zip</span>' +
+            '<span class="t2" id="n-' + a.id + '">nenhum arquivo</span></span>' +
+        '</label>' +
+        '<input class="vps-link" id="lk-' + a.id + '" placeholder="link da session (opcional)">';
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = '.zip'; inp.id = 'z-' + a.id;
+      inp.dataset.agent = a.id; inp.className = 'zsess';
+      inp.style.display = 'none';
+      inp.addEventListener('change', () => {
+        const f = inp.files[0], nm = $('n-' + a.id);
+        if(f){ nm.textContent = f.name + ' · ' + (f.size/1048576).toFixed(1) + ' MB'; row.querySelector('.drop').classList.add('has'); }
+        else { nm.textContent = 'nenhum arquivo'; row.querySelector('.drop').classList.remove('has'); }
+      });
+      row.querySelector('.drop').appendChild(inp);
+      grid.appendChild(row);
+    }
+    $('vps').innerHTML = '';
+    $('vps').appendChild(grid);
+  }catch(e){
+    setConn('err', 'falha');
+    $('vps').innerHTML = '<div class="vps-empty">Erro ao carregar: ' + e.message + '</div>';
+  }finally{
+    $('load').disabled = false;
+  }
+};
+
+// ── envio ─────────────────────────────────────────────
+async function sendZip(batch, kind, file, agent){
+  const q = '/upload-zip?batch=' + encodeURIComponent(batch) + '&kind=' + kind + (agent ? '&agent=' + encodeURIComponent(agent) : '');
+  const tag = kind + (agent ? ' [' + agent + ']' : '');
+  line('enviando ' + tag + ': ' + file.name + ' (' + (file.size/1048576).toFixed(1) + ' MB)…');
+  const r = await api(q, { method:'POST', headers:{ 'content-type':'application/zip' }, body:file });
+  const j = await r.json().catch(() => ({}));
+  if(r.ok) line('OK ' + tag + ': ' + j.files + ' arquivo(s)', 'ok');
+  else line('ERRO ' + tag + ': ' + (j.error || ('HTTP ' + r.status)), 'err');
+}
+async function sendConteudo(batch, rel, body, label, agent){
+  line('enviando ' + label + '…');
+  const q = '/upload?batch=' + encodeURIComponent(batch) + '&kind=conteudo&rel=' + encodeURIComponent(rel) + (agent ? '&agent=' + encodeURIComponent(agent) : '');
+  const r = await api(q, { method:'POST', body });
+  const j = await r.json().catch(() => ({}));
+  if(r.ok) line('OK ' + label, 'ok');
+  else line('ERRO ' + label + ': ' + (j.error || ('HTTP ' + r.status)), 'err');
+}
+
+$('go').onclick = async () => {
+  clearLog();
+  const batch = $('batch').value.trim();
+  if(!batch){ line('informe o batch', 'err'); return; }
+  save();
+  const base = $('texto').value;
+  // plano por VPS: cada uma com seu link (-> TEXTO.txt) e seu arquivo (-> sessions)
+  const vpsList = [];
+  for(const inp of document.querySelectorAll('.zsess')){
+    const agent = inp.dataset.agent;
+    const file = inp.files[0] || null;
+    const link = (($('lk-' + agent) || {}).value || '').trim();
+    if(!file && !link) continue;                  // VPS sem nada -> ignora
+    const partes = [];
+    if(link) partes.push('👉🏻 ' + link + ' 👈🏻');
+    if(base.trim()) partes.push(base);
+    vpsList.push({ agent, file, link, texto: partes.join('\n\n') });
+  }
+  const vid = $('video').files[0] || null;
+  const temTel = !!$('ztel').files[0];
+  if(!vpsList.length && !temTel && !vid){ line('nada selecionado.', 'err'); return; }
+
+  // trava de segurança: confirma o TEXTO.txt de cada VPS
+  const comTexto = vpsList.filter(v => v.texto);
+  if(comTexto.length){
+    const resumo = comTexto.map(v => '• ' + v.agent + ':\n' + v.texto).join('\n\n');
+    if(!confirm('Enviar a campanha?\n\nTEXTO.txt por VPS:\n\n' + resumo)){ line('cancelado pelo usuário'); return; }
+  }
+  const go = $('go'); go.disabled = true; const lbl = go.textContent; go.textContent = 'Enviando…';
+  try{
+    let enviou = false;
+    for(const v of vpsList){
+      if(v.file){ await sendZip(batch, 'sessions', v.file, v.agent); enviou = true; }
+      if(v.texto){ await sendConteudo(batch, 'TEXTO.txt', v.texto, 'texto [' + v.agent + ']', v.agent); enviou = true; }
+    }
+    if(temTel){ await sendZip(batch, 'telefones', $('ztel').files[0]); enviou = true; }
+    if(vid){ await sendConteudo(batch, 'VIDEO/' + vid.name, vid, 'vídeo (' + vid.name + ')'); enviou = true; }
+    line(enviou ? 'concluído.' : 'nada selecionado.', enviou ? 'ok' : 'err');
+    if(enviou && TENANT){ const nb = await nextBatch(TENANT); $('batch').value = nb; line('próximo lote: ' + nb); }
+  }catch(e){ line('erro: ' + e.message, 'err'); }
+  finally{ go.disabled = false; go.textContent = lbl; }
+};
+
+// ── bootstrap: decide login vs painel ─────────────────
+(async () => { const m = await whoami(); if(m) await showApp(m); else showLogin(); })();
+</script>
+</body>
+</html>
