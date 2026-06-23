@@ -1,0 +1,8 @@
+{
+  "_comment": "Teto por VPS. null = sem limite. sessions = nº de pastas de sessão; telefones = nº de arquivos .txt. Editar aqui NÃO exige reiniciar o hub.",
+  "default": { "sessions": null, "telefones": null },
+  "VPS01": { "sessions": null, "telefones": null },
+  "VPS02": { "sessions": null, "telefones": null },
+  "VPS03": { "sessions": null, "telefones": null },
+  "VPS04": { "sessions": null, "telefones": null }
+}

@@ -1,0 +1,25 @@
+node_modules/
+
+# segredos / ambiente
+.env
+.env.*
+!.env.example
+config/aws.js
+creds.json
+
+# dados de runtime do hub (fila, banco, telefones, sessões enviadas)
+hub/storage/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Bots e sessões — NÃO versionar (telefones reais + sessões do WhatsApp)
+/1/
+session/
+**/session/
+
+# diversos
+.DS_Store
+Thumbs.db
+scratchpad/

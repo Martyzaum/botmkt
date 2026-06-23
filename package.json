@@ -1,0 +1,20 @@
+{
+  "name": "wppbot",
+  "version": "0.1.0",
+  "description": "Automação de processos (CLI/PowerShell) em VPS Windows via SSH",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "hub": "node hub/server.js",
+    "cli": "node cli.js",
+    "agent": "node agent/agent.js",
+    "test:conn": "node src/testConnections.js",
+    "run:cmd": "node src/runCommand.js"
+  },
+  "dependencies": {
+    "node-ssh": "^13.2.0",
+    "dotenv": "^16.4.5",
+    "@aws-sdk/client-s3": "^3.624.0",
+    "@aws-sdk/client-sqs": "^3.624.0"
+  }
+}
