@@ -1,13 +1,20 @@
 # =====================================================================
 #  Instalador do Agente — rodar DENTRO de cada VPS (via RDP), como Admin.
-#  Edite as variáveis abaixo (ou passe por parâmetro) antes de rodar.
 #
-#  Ex.:  .\install-agent.ps1 -Tenant acme -AgentId acme-vps01
+#  Esta pasta (agent\) é AUTOSSUFICIENTE: cole ela inteira na VPS (não
+#  precisa git clone). Ela traz o agente (agent.js) E os scripts da
+#  campanha (neymarlol-scripts\). O instalador:
+#    1) instala/checa o Node
+#    2) instala o agente como tarefa que sobe no logon
+#    3) copia neymarlol-scripts -> %USERPROFILE%\Desktop\neymarlol-scripts
+#  O BOT (slots 1..16 com main.js) é SEU — cole nos Desktops à parte.
+#
+#  Ex.:  .\install-agent.ps1 -Tenant guilherme -AgentId guilherme-vps01
 #
 #  IMPORTANTE:
 #   - AgentId tem que ser ÚNICO em toda a frota (use prefixo do tenant).
-#   - Tenant agrupa as VPS; o orquestrador só manda trabalho do tenant
-#     para as VPS daquele tenant.
+#   - Tenant = nome do usuário do painel; o orquestrador só manda trabalho
+#     do tenant para as VPS daquele tenant.
 #   - O agente roda na SESSÃO INTERATIVA do usuário (os bots abrem janelas),
 #     então a VPS precisa de AUTO-LOGON (configurado no passo 6).
 # =====================================================================
@@ -19,6 +26,8 @@ param(
   [string]$InstallDir = 'C:\wppbot-agent',
   [switch]$SetupAutoLogon                               # grava auto-logon do usuário atual (precisa -LogonPassword)
   ,[string]$LogonPassword = ''
+  ,[switch]$SkipScripts                                 # NÃO copiar neymarlol-scripts pro Desktop
+  ,[switch]$DeployIndex                                 # após copiar os scripts, rodar deploy-index.js (precisa dos slots 1..16 com o bot em main.js)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +48,25 @@ Write-Host ("   node: " + (node -v))
 # 2) Copia o agent.js para a pasta de instalação
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot 'agent.js') -Destination (Join-Path $InstallDir 'agent.js') -Force
+
+# 2b) Copia os scripts da campanha pro Desktop\neymarlol-scripts (o playbook os chama de lá)
+if (-not $SkipScripts) {
+  $scriptsSrc = Join-Path $PSScriptRoot 'neymarlol-scripts'
+  $scriptsDst = Join-Path $env:USERPROFILE 'Desktop\neymarlol-scripts'
+  if (Test-Path $scriptsSrc) {
+    New-Item -ItemType Directory -Force -Path $scriptsDst | Out-Null
+    Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force
+    Write-Host "   scripts -> $scriptsDst" -ForegroundColor Green
+    # opcional: transforma o index.js de cada slot 1..16 no supervisor (precisa do bot em main.js)
+    if ($DeployIndex) {
+      Write-Host '   deploy-index: index.js <- slot-supervisor.js (backup em index.js.bak)' -ForegroundColor Yellow
+      Push-Location $scriptsDst
+      try { node 'deploy-index.js' } finally { Pop-Location }
+    }
+  } else {
+    Write-Host "   AVISO: '$scriptsSrc' não encontrado — cole a pasta 'agent' INTEIRA (com neymarlol-scripts dentro)." -ForegroundColor DarkYellow
+  }
+}
 
 # 3) Grava a config (lida por um wrapper)
 $envFile = Join-Path $InstallDir 'agent.env.ps1'
@@ -95,4 +123,9 @@ Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
 
 Write-Host ''
 Write-Host "Agente $AgentId (tenant=$Tenant) instalado e rodando." -ForegroundColor Green
-Write-Host "No seu PC:  node cli.js agents $Tenant   (deve aparecer ONLINE em alguns segundos)" -ForegroundColor Green
+if (-not $SkipScripts) { Write-Host "Scripts da campanha em: $env:USERPROFILE\Desktop\neymarlol-scripts" -ForegroundColor Green }
+Write-Host ''
+Write-Host "Falta o BOT: cole os slots 1..16 (com main.js) no Desktop. Depois, p/ o supervisor:" -ForegroundColor Yellow
+Write-Host "  cd `"$env:USERPROFILE\Desktop\neymarlol-scripts`"; node deploy-index.js" -ForegroundColor Yellow
+Write-Host ''
+Write-Host "Conferir: painel https://bot.atomoz.io (logado como $Tenant) -> Carregar VPS (ONLINE em ~5s)." -ForegroundColor Green
