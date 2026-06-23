@@ -169,6 +169,34 @@
   .acct .who{font-weight:700;font-size:14px}
   .acct .ten{display:inline-block;margin-left:8px;font-size:11.5px;font-weight:600;color:var(--brand);
     background:var(--brand-weak);padding:2px 9px;border-radius:999px}
+
+  /* ── abas + acompanhamento ──────────────────────────── */
+  .tabs{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--border);border-radius:12px;
+    background:var(--surface);margin-bottom:18px}
+  .tab{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:600;font-size:13.5px;
+    padding:7px 16px;border-radius:9px;cursor:pointer}
+  .tab.active{background:var(--brand-weak);color:var(--brand)}
+  .mon-bar{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+  .mon-bar select{padding:9px 11px;border:1px solid var(--border-strong);border-radius:10px;
+    background:var(--surface-2);color:var(--text);font:inherit;min-width:230px}
+  .muted{color:var(--muted);font-size:12.5px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+  @media (max-width:640px){ .stats{grid-template-columns:repeat(2,1fr)} }
+  .stat{border:1px solid var(--border);border-radius:14px;padding:14px 16px;background:var(--surface);box-shadow:var(--shadow)}
+  .stat .n{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1}
+  .stat .l{font-size:12px;color:var(--muted);font-weight:600;margin-top:6px}
+  .stat.ok .n{color:var(--ok)} .stat.warn .n{color:var(--warn)}
+  .stat.err .n{color:var(--err)} .stat.info .n{color:var(--brand)}
+  .tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
+    letter-spacing:.04em;padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .tbl td{padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .tbl tr:last-child td{border-bottom:0}
+  .tbl .empty{color:var(--faint);text-align:center;padding:18px}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700}
+  .badge.ok{background:var(--ok-bg);color:var(--ok)}
+  .badge.warn{background:var(--warn-bg);color:var(--warn)}
+  .badge.err{background:var(--err-bg);color:var(--err)}
 </style>
 </head>
 <body>
@@ -187,6 +215,11 @@
     </div>
     <div id="conn" class="pill"><span class="dot"></span><span id="conn-t">desconectado</span></div>
   </header>
+
+  <div id="tabs" class="tabs" hidden>
+    <button class="tab active" id="tab-send">Enviar campanha</button>
+    <button class="tab" id="tab-mon">Acompanhar</button>
+  </div>
 
   <!-- tela de login (some quando autenticado) -->
   <div id="login" class="login-wrap" hidden>
@@ -274,6 +307,26 @@
   </div><!-- /col -->
   </div><!-- /board -->
 
+  <!-- acompanhamento da campanha -->
+  <div id="monitor" hidden>
+    <div class="mon-bar">
+      <select id="mon-batch" title="batch a acompanhar"></select>
+      <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
+      <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
+      <span class="muted" id="mon-status"></span>
+    </div>
+    <div class="stats" id="mon-stats"></div>
+    <div class="muted" id="mon-sub" style="margin:-4px 0 16px"></div>
+    <section class="card">
+      <div class="card-h"><span class="step">↻</span><div><h2>Ondas recentes</h2><p class="hint">resultado por VPS/onda + restantes na fila</p></div></div>
+      <div style="overflow:auto"><table class="tbl" id="mon-waves"></table></div>
+    </section>
+    <section class="card">
+      <div class="card-h"><span class="step">!</span><div><h2>Números com problema</h2><p class="hint">erro/travado, com motivo</p></div></div>
+      <div style="overflow:auto"><table class="tbl" id="mon-erros"></table></div>
+    </section>
+  </div>
+
   <div id="out" hidden><div class="head">Log</div><div class="body"></div></div>
 </div>
 
@@ -339,15 +392,31 @@ async function nextBatch(tenant){
   }catch(e){}
   return base + '-' + (max + 1);
 }
-function showLogin(){ $('login').hidden = false; $('board').hidden = true; $('bar').hidden = true; setConn('', 'desconectado'); }
+function showLogin(){
+  $('login').hidden = false; $('tabs').hidden = true;
+  $('board').hidden = true; $('bar').hidden = true; $('monitor').hidden = true;
+  stopMonAuto(); setConn('', 'desconectado');
+}
 async function showApp(me){
-  $('login').hidden = true; $('board').hidden = false; $('bar').hidden = false;
+  $('login').hidden = true; $('tabs').hidden = false;
   TENANT = me.tenant;
   $('who').textContent = me.username;
   $('who-tenant').textContent = me.tenant;
   setConn('ok', 'conectado');
   $('batch').value = await nextBatch(me.tenant);
+  setTab('send');
 }
+// ── abas (Enviar | Acompanhar) ────────────────────────
+function setTab(which){
+  const send = which === 'send';
+  $('tab-send').classList.toggle('active', send);
+  $('tab-mon').classList.toggle('active', !send);
+  $('board').hidden = !send; $('bar').hidden = !send; $('monitor').hidden = send;
+  if(send){ stopMonAuto(); }
+  else { fillMonBatches().then(loadMonitor); startMonAuto(); }
+}
+$('tab-send').onclick = () => setTab('send');
+$('tab-mon').onclick  = () => setTab('mon');
 async function whoami(){ try{ const r = await api('/auth/me'); if(r.ok) return await r.json(); }catch(e){} return null; }
 
 $('lg-go').onclick = async () => {
@@ -487,6 +556,81 @@ $('go').onclick = async () => {
   }catch(e){ line('erro: ' + e.message, 'err'); }
   finally{ go.disabled = false; go.textContent = lbl; }
 };
+
+// ── acompanhamento da campanha ────────────────────────
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const hhmmss = (ts) => { try { return new Date(ts).toLocaleTimeString('pt-BR'); } catch(e){ return ts || ''; } };
+let monTimer = null;
+function stopMonAuto(){ if(monTimer){ clearInterval(monTimer); monTimer = null; } }
+function startMonAuto(){ stopMonAuto(); if($('mon-auto').checked) monTimer = setInterval(loadMonitor, 5000); }
+
+async function fillMonBatches(){
+  try{
+    const r = await api('/batches');
+    if(!r.ok) return;
+    const list = ((await r.json()).batches || []).sort().reverse();
+    const sel = $('mon-batch'), cur = sel.value || $('batch').value.trim();
+    sel.innerHTML = '';
+    if(!list.length){ sel.innerHTML = '<option value="">(nenhum batch ainda)</option>'; return; }
+    sel.innerHTML = list.map(b => '<option value="' + esc(b) + '">' + esc(b) + '</option>').join('');
+    if(list.includes(cur)) sel.value = cur;
+  }catch(e){}
+}
+
+async function loadMonitor(){
+  const batch = $('mon-batch').value;
+  if(!batch){ $('mon-stats').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
+  $('mon-status').textContent = 'atualizando…';
+  try{
+    const [st, wv, er] = await Promise.all([
+      api('/stats?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
+      api('/waves?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ waves: [] })),
+      api('/erros?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ erros: [] })),
+    ]);
+    renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []);
+    $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
+  }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
+}
+function renderStats(s){
+  const cards = [
+    { c:'ok',   n: s.sucesso ?? 0,       l:'sucesso' },
+    { c:'warn', n: s.travado ?? 0,       l:'travado' },
+    { c:'err',  n: s.erro ?? 0,          l:'erro' },
+    { c:'info', n: s.restantes ?? '—',   l:'restantes na fila' },
+  ];
+  $('mon-stats').innerHTML = cards.map(c => '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div><div class="l">' + c.l + '</div></div>').join('');
+  $('mon-sub').textContent = (s.ondas != null)
+    ? (s.ondas || 0) + ' onda(s)' + (s.inicio ? ' · início ' + hhmmss(s.inicio) : '') + (s.fim ? ' · última ' + hhmmss(s.fim) : '')
+    : 'sem dados ainda — a campanha grava aqui conforme roda';
+}
+function renderWaves(waves){
+  const t = $('mon-waves');
+  if(!waves.length){ t.innerHTML = '<tr><td class="empty">sem ondas ainda</td></tr>'; return; }
+  let h = '<tr><th>hora</th><th>VPS</th><th>onda</th><th>✓</th><th>⚠</th><th>✗</th><th>restantes</th></tr>';
+  for(const w of waves){
+    h += '<tr><td>' + hhmmss(w.ts) + '</td><td>' + esc(w.agent) + '</td><td>' + (w.wave|0) + '</td>'
+      + '<td style="color:var(--ok);font-weight:700">' + (w.sucesso|0) + '</td>'
+      + '<td style="color:var(--warn);font-weight:700">' + (w.travado|0) + '</td>'
+      + '<td style="color:var(--err);font-weight:700">' + (w.erro|0) + '</td>'
+      + '<td>' + (w.pending_after ?? '—') + '</td></tr>';
+  }
+  t.innerHTML = h;
+}
+function renderErros(erros){
+  const t = $('mon-erros');
+  if(!erros.length){ t.innerHTML = '<tr><td class="empty">nenhum número com problema 🎉</td></tr>'; return; }
+  let h = '<tr><th>número</th><th>status</th><th>motivo</th><th>VPS/onda</th></tr>';
+  for(const e of erros){
+    const cls = e.status === 'erro' ? 'err' : 'warn';
+    h += '<tr><td>' + esc(e.numero || '—') + '</td><td><span class="badge ' + cls + '">' + esc(e.status) + '</span></td>'
+      + '<td class="muted" style="white-space:normal;max-width:340px">' + esc(e.motivo || '—') + '</td>'
+      + '<td>' + esc(e.agent) + ' / ' + (e.wave|0) + '</td></tr>';
+  }
+  t.innerHTML = h;
+}
+$('mon-refresh').onclick = loadMonitor;
+$('mon-batch').onchange = loadMonitor;
+$('mon-auto').onchange = startMonAuto;
 
 // ── bootstrap: decide login vs painel ─────────────────
 (async () => { const m = await whoami(); if(m) await showApp(m); else showLogin(); })();
