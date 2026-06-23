@@ -1,33 +1,35 @@
 # =====================================================================
-#  Instalador do Agente — rodar DENTRO de cada VPS (via RDP), como Admin.
+#  Instalador do Agente - rodar DENTRO de cada VPS (via RDP), como Admin.
+#  (arquivo em ASCII de proposito: Windows PowerShell 5.1 quebra com
+#   acentos/traveloss quando o .ps1 nao tem BOM.)
 #
-#  Esta pasta (agent\) é AUTOSSUFICIENTE: cole ela inteira na VPS (não
+#  Esta pasta (agent\) e AUTOSSUFICIENTE: cole ela inteira na VPS (nao
 #  precisa git clone). Ela traz o agente (agent.js) E os scripts da
 #  campanha (neymarlol-scripts\). O instalador:
 #    1) instala/checa o Node
 #    2) instala o agente como tarefa que sobe no logon
 #    3) copia neymarlol-scripts -> %USERPROFILE%\Desktop\neymarlol-scripts
-#  O BOT (slots 1..16 com main.js) é SEU — cole nos Desktops à parte.
+#  O BOT (slots 1..16 com main.js) e SEU - cole nos Desktops a parte.
 #
 #  Ex.:  .\install-agent.ps1 -Tenant guilherme -AgentId guilherme-vps01
 #
 #  IMPORTANTE:
-#   - AgentId tem que ser ÚNICO em toda a frota (use prefixo do tenant).
-#   - Tenant = nome do usuário do painel; o orquestrador só manda trabalho
+#   - AgentId tem que ser UNICO em toda a frota (use prefixo do tenant).
+#   - Tenant = nome do usuario do painel; o orquestrador so manda trabalho
 #     do tenant para as VPS daquele tenant.
-#   - O agente roda na SESSÃO INTERATIVA do usuário (os bots abrem janelas),
-#     então a VPS precisa de AUTO-LOGON (configurado no passo 6).
+#   - O agente roda na SESSAO INTERATIVA do usuario (os bots abrem janelas),
+#     entao a VPS precisa de AUTO-LOGON (configurado no passo 6).
 # =====================================================================
 param(
-  [string]$HubUrl   = 'https://apibot.atomoz.io',       # API pública do hub (sem barra no fim)
+  [string]$HubUrl   = 'https://apibot.atomoz.io',       # API publica do hub (sem barra no fim)
   [string]$HubToken = 'e912fb0a39667bc64e99f57ed1cc90979775a625bee9c677',
-  [string]$Tenant   = 'default',                        # tenant desta VPS = nome do usuário do painel (ex.: guilherme)
-  [string]$AgentId  = 'default-vps01',                  # ÚNICO na frota (ex.: guilherme-vps01)
+  [string]$Tenant   = 'default',                        # tenant desta VPS = nome do usuario do painel (ex.: guilherme)
+  [string]$AgentId  = 'default-vps01',                  # UNICO na frota (ex.: guilherme-vps01)
   [string]$InstallDir = 'C:\wppbot-agent',
-  [switch]$SetupAutoLogon                               # grava auto-logon do usuário atual (precisa -LogonPassword)
+  [switch]$SetupAutoLogon                               # grava auto-logon do usuario atual (precisa -LogonPassword)
   ,[string]$LogonPassword = ''
-  ,[switch]$SkipScripts                                 # NÃO copiar neymarlol-scripts pro Desktop
-  ,[switch]$DeployIndex                                 # após copiar os scripts, rodar deploy-index.js (precisa dos slots 1..16 com o bot em main.js)
+  ,[switch]$SkipScripts                                 # NAO copiar neymarlol-scripts pro Desktop
+  ,[switch]$DeployIndex                                 # apos copiar os scripts, rodar deploy-index.js (precisa dos slots 1..16 com o bot em main.js)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,20 +38,20 @@ Write-Host "== Instalando agente $AgentId (tenant=$Tenant) ==" -ForegroundColor 
 # 1) Node.js presente?
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
-  Write-Host '== Node não encontrado. Instalando via winget ==' -ForegroundColor Yellow
+  Write-Host '== Node nao encontrado. Instalando via winget ==' -ForegroundColor Yellow
   winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
               [System.Environment]::GetEnvironmentVariable('Path','User')
   $node = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $node) { throw 'Node não instalou. Instale manualmente de https://nodejs.org e rode de novo.' }
+  if (-not $node) { throw 'Node nao instalou. Instale manualmente de https://nodejs.org e rode de novo.' }
 }
 Write-Host ("   node: " + (node -v))
 
-# 2) Copia o agent.js para a pasta de instalação
+# 2) Copia o agent.js para a pasta de instalacao
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot 'agent.js') -Destination (Join-Path $InstallDir 'agent.js') -Force
 
-# 2b) Copia os scripts da campanha pro Desktop\neymarlol-scripts (o playbook os chama de lá)
+# 2b) Copia os scripts da campanha pro Desktop\neymarlol-scripts (o playbook os chama de la)
 if (-not $SkipScripts) {
   $scriptsSrc = Join-Path $PSScriptRoot 'neymarlol-scripts'
   $scriptsDst = Join-Path $env:USERPROFILE 'Desktop\neymarlol-scripts'
@@ -64,7 +66,7 @@ if (-not $SkipScripts) {
       try { node 'deploy-index.js' } finally { Pop-Location }
     }
   } else {
-    Write-Host "   AVISO: '$scriptsSrc' não encontrado — cole a pasta 'agent' INTEIRA (com neymarlol-scripts dentro)." -ForegroundColor DarkYellow
+    Write-Host "   AVISO: '$scriptsSrc' nao encontrado - cole a pasta 'agent' INTEIRA (com neymarlol-scripts dentro)." -ForegroundColor DarkYellow
   }
 }
 
@@ -87,8 +89,8 @@ Set-Location '$InstallDir'
 node '$InstallDir\agent.js'
 "@ | Set-Content -Path $runner -Encoding UTF8
 
-# 5) Tarefa agendada: roda NA SESSÃO DO USUÁRIO LOGADO (acesso ao desktop e a apps GUI),
-#    sobe no logon e reinicia se cair. Sem limite de tempo de execução.
+# 5) Tarefa agendada: roda NA SESSAO DO USUARIO LOGADO (acesso ao desktop e a apps GUI),
+#    sobe no logon e reinicia se cair. Sem limite de tempo de execucao.
 $taskName = "wppbot-agent-$AgentId"
 $me = "$env:USERDOMAIN\$env:USERNAME"
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
@@ -102,10 +104,10 @@ Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Silent
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
   -Principal $principal -Settings $settings | Out-Null
 
-# 6) Auto-logon (opcional): garante que após reboot o usuário loga sozinho e a
-#    tarefa "AtLogOn" dispara (os bots precisam de sessão interativa).
+# 6) Auto-logon (opcional): garante que apos reboot o usuario loga sozinho e a
+#    tarefa "AtLogOn" dispara (os bots precisam de sessao interativa).
 if ($SetupAutoLogon) {
-  if (-not $LogonPassword) { throw 'Para -SetupAutoLogon, passe -LogonPassword "<senha do usuário>".' }
+  if (-not $LogonPassword) { throw 'Para -SetupAutoLogon, passe -LogonPassword "<senha do usuario>".' }
   $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
   Set-ItemProperty $winlogon -Name 'AutoAdminLogon' -Value '1'
   Set-ItemProperty $winlogon -Name 'DefaultUserName' -Value $env:USERNAME
@@ -113,7 +115,7 @@ if ($SetupAutoLogon) {
   Set-ItemProperty $winlogon -Name 'DefaultPassword' -Value $LogonPassword
   Write-Host '   auto-logon configurado.' -ForegroundColor Green
 } else {
-  Write-Host '   (auto-logon NÃO configurado — rode com -SetupAutoLogon -LogonPassword "..." se a VPS reinicia sem login)' -ForegroundColor DarkYellow
+  Write-Host '   (auto-logon NAO configurado - rode com -SetupAutoLogon -LogonPassword "..." se a VPS reinicia sem login)' -ForegroundColor DarkYellow
 }
 
 # 7) Inicia agora
