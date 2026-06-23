@@ -47,6 +47,11 @@ function touchAgent(id, ip, patch = {}) {
   agents.set(id, { ...prev, id, lastSeen: now(), ip, ...patch });
 }
 const agentView = (a) => ({ ...a, online: isOnline(a) });
+// IP real do cliente atrás de reverse proxy (X-Forwarded-For) ou direto.
+const clientIp = (req) => {
+  const xff = req.headers['x-forwarded-for'];
+  return (xff ? String(xff).split(',')[0].trim() : '') || req.socket.remoteAddress;
+};
 
 function auth(req) {
   const h = req.headers['authorization'] || '';
@@ -334,7 +339,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/agent/poll' && req.method === 'POST') {
     const b = await readBody(req);
     if (!b.id) return send(res, 400, { error: 'id obrigatório' });
-    touchAgent(b.id, req.socket.remoteAddress, { ...(b.tenant ? { tenant: b.tenant } : {}), ...(b.info ? { info: b.info } : {}) });
+    touchAgent(b.id, clientIp(req), { ...(b.tenant ? { tenant: b.tenant } : {}), ...(b.info ? { info: b.info } : {}) });
     const job = await queue.receive(b.id);
     if (job) {
       const existing = jobs.get(job.id);
@@ -346,7 +351,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/agent/heartbeat' && req.method === 'POST') {
     const b = await readBody(req);
     if (!b.id) return send(res, 400, { error: 'id obrigatório' });
-    touchAgent(b.id, req.socket.remoteAddress, { status: b.status || 'idle', job: b.job || null, ...(b.tenant ? { tenant: b.tenant } : {}) });
+    touchAgent(b.id, clientIp(req), { status: b.status || 'idle', job: b.job || null, ...(b.tenant ? { tenant: b.tenant } : {}) });
     return send(res, 200, { ok: true });
   }
   if (p === '/agent/result' && req.method === 'POST') {
