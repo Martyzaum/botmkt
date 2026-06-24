@@ -358,6 +358,7 @@
       <select id="mon-batch" title="batch a acompanhar"></select>
       <button id="mon-start" class="btn btn-primary" style="width:auto" type="button">▶ Iniciar campanha</button>
       <button id="mon-stop" class="btn btn-secondary" style="width:auto;display:none" type="button">⏸ Pausar</button>
+      <label class="muted" title="retomar SEM redistribuir as sessions (usa as que já estão nas VPS) — rápido"><input type="checkbox" id="mon-skip"> continuar (sem redistribuir)</label>
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
@@ -834,7 +835,7 @@ $('mon-start').onclick = async () => {
   if(!confirm('Iniciar a campanha do batch ' + batch + '?\n\nIsso vai DISPARAR os envios de verdade nas VPS ativas.')) return;
   $('mon-start').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">iniciando…</span>';
   try{
-    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
+    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch, skipSetup: $('mon-skip').checked }) });
     const j = await r.json().catch(() => ({}));
     if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha iniciada'; loadMonitor(); }
     else if(r.status === 409){ $('mon-run').innerHTML = '<span class="badge warn">já rodando</span> nesse batch'; loadMonitor(); }

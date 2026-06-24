@@ -570,7 +570,7 @@ const server = http.createServer(async (req, res) => {
     const tenant = A.kind === 'session' ? A.tenant : (b.tenant || 'default');
     const running = [...runs.values()].find((r) => r.playbook === 'campanha-fila' && r.status === 'running' && r.args?.batch === batch && (r.args?.tenant || 'default') === tenant);
     if (running) return send(res, 409, { error: 'já há uma campanha rodando nesse batch', runId: running.id });
-    try { const run = await runPlaybook('campanha-fila', { batch, tenant }); return send(res, 200, { runId: run.id, status: run.status }); }
+    try { const run = await runPlaybook('campanha-fila', { batch, tenant, skipSetup: !!b.skipSetup }); return send(res, 200, { runId: run.id, status: run.status }); }
     catch (e) { return send(res, 400, { error: e.message }); }
   }
   // pausar campanha pelo painel: sinaliza o(s) run(s) desse batch p/ parar entre
