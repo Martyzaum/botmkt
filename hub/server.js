@@ -141,7 +141,7 @@ const runOnAgent = (agent, command, opts = {}) =>
   enqueueAndWait(agent, { type: 'shell', command, shell: opts.shell || 'powershell', timeoutMs: opts.timeoutMs }, opts);
 
 // ---- distribuição round-robin com teto por VPS -------------------------
-async function distributeKind(batch, kind, targetAgents, log, limitsOverride) {
+async function distributeKind(batch, kind, targetAgents, log, limitsOverride, onlyUnits) {
   const destFolder = kind === 'sessions' ? 'SESSIONS' : 'TELEFONES CAMPANHA';
   const ags = targetAgents.length ? targetAgents : knownAgents();
   if (!ags.length) throw new Error('nenhum agente disponível para distribuir');
@@ -164,7 +164,13 @@ async function distributeKind(batch, kind, targetAgents, log, limitsOverride) {
       unitFiles.get(key).push({ rel: f });
     }
   }
-  const units = [...unitFiles.keys()];
+  let units = [...unitFiles.keys()];
+  // onlyUnits: distribui SÓ essas units (ex.: sessions recém-adicionadas com a
+  // campanha rodando — não re-empurra as que já estão nas VPS).
+  if (onlyUnits && onlyUnits.length) {
+    const want = new Set(onlyUnits);
+    units = units.filter((u) => want.has(u));
+  }
   if (!units.length) throw new Error(`nada para distribuir em ${kind} (batch ${batch})`);
 
   const limits = limitsOverride || (await loadLimits());
@@ -402,6 +408,40 @@ const server = http.createServer(async (req, res) => {
       for (const e of entries) { await store.put(storageBatch, kind, e.name, e.data); n++; }
       if (kind === 'telefones') { try { await workqueue.reset(batch); } catch { /* fila recria no play */ } }
       return send(res, 200, { ok: true, kind, agent: agent || null, files: n, copias, links });
+    } catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  // adicionar sessions COM a campanha rodando: sobe no pool + distribui SÓ as
+  // novas pras VPS ONLINE do tenant (a próxima onda do movimenta-sessions já pega).
+  if (p === '/sessions/add' && req.method === 'POST') {
+    const batch = url.searchParams.get('batch'), link = url.searchParams.get('link');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (url.searchParams.get('tenant') || 'default');
+    if (A.kind === 'session' && batch !== A.tenant && !batch.startsWith(A.tenant + '-')) return send(res, 403, { error: 'batch de outro tenant' });
+    try {
+      const entries = unzip(await readRaw(req));
+      const norm = (s) => String(s).replaceAll('\\', '/');
+      const have = new Set(entries.map((e) => norm(e.name)));
+      const data = link ? Buffer.from(String(link).trim(), 'utf8') : null;
+      const seen = new Set(), sessInv = [], extraL = [], novas = [];
+      for (const e of entries) {
+        const parts = norm(e.name).split('/');
+        if (parts.length < 2 || !/^\d+-\d+$/.test(parts[1])) continue;
+        const unit = `${parts[0]}/${parts[1]}`;
+        if (seen.has(unit)) continue;
+        seen.add(unit); novas.push(unit);
+        sessInv.push({ telefone: parts[0], subsession: parts[1], link: link || null });
+        if (data) { const lname = `${unit}/session-link.txt`; if (!have.has(lname)) { have.add(lname); extraL.push({ name: lname, data }); } }
+      }
+      if (!novas.length) return send(res, 400, { error: 'nenhuma subsession <numero>-<n> encontrada no zip' });
+      entries.push(...extraL);
+      try { db.inventSessions(batch, tenant, sessInv); } catch { /* inventário best-effort */ }
+      for (const e of entries) await store.put(batch, 'sessions', e.name, e.data);
+      // distribui SÓ as novas pras VPS online do tenant (não re-empurra as que já estão lá)
+      const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
+      if (!ativos.length) return send(res, 200, { ok: true, novas: novas.length, distribuido: 0, aviso: 'sessions subidas, mas nenhuma VPS online p/ distribuir' });
+      const ds = await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas);
+      const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
+      return send(res, 200, { ok: true, novas: novas.length, distribuido, agentes: ativos });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {

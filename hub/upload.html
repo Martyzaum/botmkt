@@ -366,6 +366,15 @@
     <div class="stats" id="mon-queue"></div>
     <div class="muted" id="mon-sub" style="margin:10px 0 16px"></div>
     <section class="card">
+      <div class="card-h"><span class="step">+</span><div><h2>Adicionar sessions</h2><p class="hint">sobe e distribui pras VPS ativas — a próxima onda já usa (útil se o pool acabar com telefones sobrando)</p></div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input type="file" id="add-sess-zip" accept=".zip">
+        <input type="text" id="add-sess-link" placeholder="link da session (opcional)" style="flex:1;min-width:200px;padding:9px 11px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);color:var(--text);font:inherit">
+        <button id="add-sess-btn" class="btn btn-primary" style="width:auto" type="button">+ Adicionar</button>
+      </div>
+      <div class="muted" id="add-sess-status" style="margin-top:8px"></div>
+    </section>
+    <section class="card">
       <div class="card-h"><span class="step">≡</span><div><h2>Inventário</h2><p class="hint">o que foi subido: usado / erro / pending</p></div></div>
       <div class="inv-grid">
         <div class="inv-box"><div class="inv-h">Sessions <span class="muted" id="inv-s-tot"></span></div><div id="inv-sessions"></div></div>
@@ -767,6 +776,32 @@ function renderInventory(inv){
 $('mon-refresh').onclick = loadMonitor;
 $('mon-batch').onchange = loadMonitor;
 $('mon-auto').onchange = startMonAuto;
+
+// adicionar sessions com a campanha rodando -> sobe + distribui pras VPS ativas
+$('add-sess-btn').onclick = async () => {
+  const batch = $('mon-batch').value;
+  const file = $('add-sess-zip').files[0];
+  const link = $('add-sess-link').value.trim();
+  const st = $('add-sess-status');
+  if(!batch){ st.textContent = 'selecione um batch primeiro'; return; }
+  if(!file){ st.textContent = 'escolha o .zip de sessions'; return; }
+  $('add-sess-btn').disabled = true;
+  st.textContent = 'enviando ' + file.name + ' (' + (file.size/1048576).toFixed(1) + ' MB)…';
+  try{
+    const q = '/sessions/add?batch=' + encodeURIComponent(batch) + (link ? '&link=' + encodeURIComponent(link) : '');
+    const r = await api(q, { method:'POST', headers:{ 'content-type':'application/zip' }, body:file });
+    const j = await r.json().catch(() => ({}));
+    if(r.ok){
+      st.innerHTML = '<span class="badge ok">+' + j.novas + ' sessions</span> distribuídas em ' + (j.distribuido || 0) + ' VPS'
+        + (j.aviso ? ' · <span class="badge warn">⚠</span> ' + esc(j.aviso) : ' — a próxima onda já usa');
+      $('add-sess-zip').value = ''; $('add-sess-link').value = '';
+      loadMonitor();
+    } else {
+      st.innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status));
+    }
+  }catch(e){ st.innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); }
+  $('add-sess-btn').disabled = false;
+};
 
 // ── iniciar campanha pelo painel ──────────────────────
 async function refreshCampaign(batch){
