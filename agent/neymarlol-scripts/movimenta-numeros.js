@@ -1,12 +1,26 @@
+// =====================================================================
+//  MOVIMENTA NÚMEROS — move os pares (TELEFONES-<n>.txt + " - Copia") do
+//  pool Desktop\TELEFONES CAMPANHA para os slots.
+//
+//  >>> Mudança importante: vai SÓ pros slots que têm session ('session'
+//      ou '<numero>-<n>' pendente). <<<  Antes era posicional (1..16), mas
+//      com session-keeping os slots ativos ficam espalhados — telefone tem
+//      que cair NO slot que tem session, senão um falha e o outro fica sem
+//      número.
+//
+//  Imprime, por par, "Numero X -> pasta N" (o orquestrador lê isto p/ mapear
+//  slot<->numero) e no fim:
+//     RESULTADO_NUMEROS pares=A ativos=B movidos=C
+//
+//  Env: DESKTOP_DIR (opcional), SLOTS (default 16)
+// =====================================================================
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-// true = só testa
-// false = move de verdade
 const TESTE = false;
-
-const desktop = path.join(os.homedir(), "Desktop");
+const desktop = process.env.DESKTOP_DIR || path.join(os.homedir(), "Desktop");
+const SLOTS = Number(process.env.SLOTS || 16);
 const origem = path.join(desktop, "TELEFONES CAMPANHA");
 
 if (!fs.existsSync(origem)) {
@@ -14,112 +28,89 @@ if (!fs.existsSync(origem)) {
   process.exit(1);
 }
 
-// Valida se as pastas 1\DADOS a 16\DADOS existem
-for (let i = 1; i <= 16; i++) {
-  const pastaDados = path.join(desktop, String(i), "DADOS");
-  if (!fs.existsSync(pastaDados)) {
-    console.error("Pasta nao encontrada: " + pastaDados);
+const patternSessao = /^\d+-\d+$/;
+function listarPastas(caminho) {
+  if (!fs.existsSync(caminho)) return [];
+  return fs.readdirSync(caminho, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+}
+
+// 1) slots ATIVOS = têm session ('session' já renomeada OU '<numero>-<n>' pendente).
+//    Só esses recebem telefone. DADOS precisa existir.
+const slotsAtivos = [];
+for (let i = 1; i <= SLOTS; i++) {
+  const slot = path.join(desktop, String(i));
+  const dados = path.join(slot, "DADOS");
+  if (!fs.existsSync(dados)) {
+    console.error("Pasta nao encontrada: " + dados);
     process.exit(1);
   }
+  const temSession = fs.existsSync(path.join(slot, "session")) || listarPastas(slot).some((n) => patternSessao.test(n));
+  if (temSession) slotsAtivos.push(i);
 }
 
-// Aceita SOMENTE:
-// TELEFONES-85.txt
-// TELEFONES-85 - Copia.txt
+// 2) pares completos (original + copia) no pool, ordenados por numero
 const pattern = /^TELEFONES-(\d+)(?: - Copia)?\.txt$/i;
-
-const arquivos = fs
-  .readdirSync(origem)
-  .filter(function (nome) {
-    const caminho = path.join(origem, nome);
-    return fs.statSync(caminho).isFile() && pattern.test(nome);
-  });
-
+const arquivos = fs.readdirSync(origem).filter((nome) => fs.statSync(path.join(origem, nome)).isFile() && pattern.test(nome));
 const grupos = new Map();
 for (const arquivo of arquivos) {
-  const match = arquivo.match(pattern);
-  const numero = Number(match[1]);
-  if (!grupos.has(numero)) {
-    grupos.set(numero, []);
-  }
+  const numero = Number(arquivo.match(pattern)[1]);
+  if (!grupos.has(numero)) grupos.set(numero, []);
   grupos.get(numero).push(arquivo);
 }
-
-// Ordena pelos numeros e pega somente os primeiros 16 grupos completos
 const gruposOrdenados = Array.from(grupos.entries())
-  .sort(function (a, b) {
-    return a[0] - b[0];
-  })
-  .filter(function ([numero, lista]) {
-    const temOriginal = lista.some(function (nome) {
-      return /^TELEFONES-\d+\.txt$/i.test(nome);
-    });
-    const temCopia = lista.some(function (nome) {
-      return /^TELEFONES-\d+ - Copia\.txt$/i.test(nome);
-    });
+  .sort((a, b) => a[0] - b[0])
+  .filter(([numero, lista]) => {
+    const temOriginal = lista.some((n) => /^TELEFONES-\d+\.txt$/i.test(n));
+    const temCopia = lista.some((n) => /^TELEFONES-\d+ - Copia\.txt$/i.test(n));
     if (!temOriginal || !temCopia) {
-      console.log(
-        "IGNORADO numero " +
-          numero +
-          ": precisa ter original e copia. Encontrado: " +
-          lista.join(", ")
-      );
+      console.log(`IGNORADO numero ${numero}: precisa ter original e copia. Encontrado: ${lista.join(", ")}`);
       return false;
     }
     return true;
-  })
-  .slice(0, 16);
+  });
 
+const fim = (movidos) => {
+  console.log("");
+  console.log(`RESULTADO_NUMEROS pares=${gruposOrdenados.length} ativos=${slotsAtivos.length} movidos=${movidos}`);
+};
+
+console.log(`Slots ativos (com session): ${slotsAtivos.length} (${slotsAtivos.join(", ") || "-"}) | pares no pool: ${gruposOrdenados.length}`);
+console.log("");
+
+if (slotsAtivos.length === 0) {
+  console.log("Nenhum slot ativo (sem session) — nao movi nenhum par.");
+  fim(0);
+  process.exit(0);
+}
 if (gruposOrdenados.length === 0) {
   console.log("Nenhum par completo encontrado para mover.");
+  fim(0);
   process.exit(0);
 }
 
-console.log("Pares que serao processados nesta rodada: " + gruposOrdenados.length);
-console.log("");
+// 3) 1 par por slot ATIVO, na ordem (ativos[k] recebe grupos[k])
+const n = Math.min(slotsAtivos.length, gruposOrdenados.length);
+let movidos = 0;
+for (let k = 0; k < n; k++) {
+  const slotNum = slotsAtivos[k];
+  const [numero, lista] = gruposOrdenados[k];
+  const pastaDestino = path.join(desktop, String(slotNum), "DADOS");
+  lista.sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
 
-for (let i = 0; i < gruposOrdenados.length; i++) {
-  const [numero, lista] = gruposOrdenados[i];
-  const pastaNumero = i + 1;
-  const pastaDestino = path.join(desktop, String(pastaNumero), "DADOS");
-
-  lista.sort(function (a, b) {
-    return a.localeCompare(b, "pt-BR", { numeric: true });
-  });
-
-  console.log("Numero " + numero + " -> pasta " + pastaNumero + "/DADOS");
-
+  console.log("Numero " + numero + " -> pasta " + slotNum + "/DADOS");
   for (const arquivo of lista) {
     const caminhoAtual = path.join(origem, arquivo);
     let caminhoDestino = path.join(pastaDestino, arquivo);
-
     if (fs.existsSync(caminhoDestino)) {
       const ext = path.extname(arquivo);
-      const base = path.basename(arquivo, ext);
-      caminhoDestino = path.join(
-        pastaDestino,
-        base + "" + Date.now() + "" + i + ext
-      );
+      caminhoDestino = path.join(pastaDestino, path.basename(arquivo, ext) + "" + Date.now() + "" + k + ext);
     }
-
-    if (TESTE) {
-      console.log("  [TESTE] " + arquivo);
-    } else {
-      fs.renameSync(caminhoAtual, caminhoDestino);
-      console.log("  MOVIDO " + arquivo);
-    }
+    if (TESTE) console.log("  [TESTE] " + arquivo);
+    else { fs.renameSync(caminhoAtual, caminhoDestino); console.log("  MOVIDO " + arquivo); }
   }
-
+  movidos++;
   console.log("");
 }
 
 console.log("Rodada finalizada.");
-
-if (TESTE) {
-  console.log("");
-  console.log("Modo TESTE ativo.");
-  console.log("Para mover de verdade, troque:");
-  console.log("const TESTE = true;");
-  console.log("por:");
-  console.log("const TESTE = false;");
-}
+fim(movidos);

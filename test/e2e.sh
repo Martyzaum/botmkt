@@ -113,9 +113,12 @@ mk_sess 5522222222222 "https://oferta/BBB"   # -> slot 2
 for n in 1 2; do printf '5511999990%03d\n' "$n" > "$DESK/TELEFONES CAMPANHA/TELEFONES-$n.txt"; cp "$DESK/TELEFONES CAMPANHA/TELEFONES-$n.txt" "$DESK/TELEFONES CAMPANHA/TELEFONES-$n - Copia.txt"; done
 
 runs(){ DESKTOP_DIR="$DESK" node "$NEY/$1" >/dev/null 2>&1; }   # roda 1 script da onda
-# ordem EXATA do campanha-fila.js:
-runs limpar-broadcast.js; runs limpar-telefones.js; runs renomear-numeros.js; runs limpar-telefones.js; runs limpar-sessions.js
-runs movimenta-numeros.js; runs movimenta-sessions.js; runs renomear-sessions.js; runs renomear-numeros.js; runs gera-texto.js
+# ordem EXATA do campanha-fila.js: SESSIONS primeiro (definem os slots ativos),
+# depois TELEFONES (movimenta-numeros é session-aware: só cai em slot com session).
+runs limpar-broadcast.js; runs limpar-sessions.js
+runs movimenta-sessions.js; runs renomear-sessions.js
+runs limpar-telefones.js; runs limpar-telefones.js
+runs movimenta-numeros.js; runs renomear-numeros.js; runs gera-texto.js
 
 # invariante: em cada slot, o link no TEXTO.txt == o link da session daquele slot
 for slot in 1 2; do

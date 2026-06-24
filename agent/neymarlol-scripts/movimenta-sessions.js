@@ -1,41 +1,65 @@
+// =====================================================================
+//  MOVIMENTA SESSIONS — enche com session do pool (Desktop\sessions) SÓ
+//  os slots que estão VAZIOS (sem 'session' e sem '<numero>-<n>').
+//
+//  >>> Mudança importante: NÃO mexe nos slots que já têm session. <<<
+//  Assim a session que funcionou numa onda é MANTIDA e manda vários lotes
+//  (o orquestrador limpa a session só do slot que falhou). Isso faz o pool
+//  durar MUITO mais — antes rotacionava as 16 toda onda e secava na hora.
+//
+//  Pool: Desktop\sessions\<telefone>\<numero>-<n>  (subpasta = 1 subsession)
+//  Move 1 subsession por slot vazio (ordenado por numero/indice).
+//
+//  Imprime no fim uma linha estável pro orquestrador:
+//     RESULTADO_SESSIONS vazios=X movidas=Y comSession=K poolRestante=Z
+//
+//  Env: DESKTOP_DIR (opcional), SLOTS (default 16)
+// =====================================================================
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-// true = só testa
-// false = move de verdade
-const TESTE = false;
-
-const desktop = path.join(os.homedir(), "Desktop");
+const TESTE = false; // true = só simula
+const desktop = process.env.DESKTOP_DIR || path.join(os.homedir(), "Desktop");
+const SLOTS = Number(process.env.SLOTS || 16);
 const origem = path.join(desktop, "sessions");
 
+// Aceita SOMENTE subpastas no formato <numero>-<n> (ex: 5511979947607-1)
+const patternSessao = /^\d+-\d+$/;
+
 if (!fs.existsSync(origem)) {
+  // sem pool: ainda reporta quantos slots já têm session (pode estar tudo mantido)
   console.error("Pasta de origem nao encontrada: " + origem);
-  process.exit(1);
 }
 
-// Valida se as pastas de destino 1 a 16 existem
-for (let i = 1; i <= 16; i++) {
-  const pastaDestino = path.join(desktop, String(i));
-  if (!fs.existsSync(pastaDestino)) {
-    console.error("Pasta de destino nao encontrada: " + pastaDestino);
+function listarPastas(caminho) {
+  if (!fs.existsSync(caminho)) return [];
+  return fs
+    .readdirSync(caminho, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+}
+
+// 1) quais slots PRECISAM de session (sem 'session' e sem '<numero>-<n>' pendente).
+//    Slots que JÁ têm session (funcionaram) são MANTIDOS.
+const slotsVazios = [];
+let comSessionExistente = 0;
+for (let i = 1; i <= SLOTS; i++) {
+  const slot = path.join(desktop, String(i));
+  if (!fs.existsSync(slot)) {
+    console.error("Pasta de destino nao encontrada: " + slot);
     process.exit(1);
+  }
+  const temSession = fs.existsSync(path.join(slot, "session"));
+  const temPendente = listarPastas(slot).some((n) => patternSessao.test(n));
+  if (temSession || temPendente) {
+    comSessionExistente++;
+  } else {
+    slotsVazios.push(i);
   }
 }
 
-// Aceita SOMENTE subpastas no formato <numero>-<n>
-// ex: 5511979947607-1, 5511979947607-2
-const patternSessao = /^\d+-\d+$/;
-
-// helper: lista só diretorios dentro de um caminho
-function listarPastas(caminho) {
-  return fs.readdirSync(caminho).filter(function (nome) {
-    return fs.statSync(path.join(caminho, nome)).isDirectory();
-  });
-}
-
-// 1) percorre cada pasta de telefone dentro de sessions
-// 2) dentro de cada uma, coleta as subpastas <numero>-<n>
+// 2) candidatos do pool, ordenados por numero do telefone e depois pelo indice
 const candidatos = [];
 for (const pastaTelefone of listarPastas(origem)) {
   const caminhoTelefone = path.join(origem, pastaTelefone);
@@ -45,91 +69,75 @@ for (const pastaTelefone of listarPastas(origem)) {
     candidatos.push({
       numero: BigInt(partes[0]),
       sessao: Number(partes[1]),
-      nome: nome,
+      nome,
       telefone: pastaTelefone,
       caminho: path.join(caminhoTelefone, nome),
     });
   }
 }
+candidatos.sort((a, b) => (a.numero < b.numero ? -1 : a.numero > b.numero ? 1 : a.sessao - b.sessao));
 
-// ordena por numero do telefone, depois pelo indice da sessao (-1, -2, ...)
-candidatos.sort(function (a, b) {
-  if (a.numero < b.numero) return -1;
-  if (a.numero > b.numero) return 1;
-  return a.sessao - b.sessao;
-});
+const reporta = (movidas) => {
+  const comSession = comSessionExistente + movidas;
+  const poolRestante = candidatos.length - movidas;
+  const faltam = slotsVazios.length - movidas;
+  console.log("");
+  console.log(
+    `Movidas: ${movidas} | faltaram (sem session): ${faltam} | ` +
+      `slots com session agora: ${comSession}/${SLOTS} | pool restante: ${poolRestante}`
+  );
+  console.log(`RESULTADO_SESSIONS vazios=${slotsVazios.length} movidas=${movidas} comSession=${comSession} poolRestante=${poolRestante}`);
+};
 
-// pega só os 16 primeiros (um por pasta destino)
-const lote = candidatos.slice(0, 16);
+console.log(
+  `Slots que precisam de session: ${slotsVazios.length} (${slotsVazios.join(", ") || "-"}) | ` +
+    `mantidos (ja tem): ${comSessionExistente} | pool disponivel: ${candidatos.length}`
+);
+console.log("");
 
-if (lote.length === 0) {
-  console.log("Nenhuma subpasta <numero>-<n> encontrada para mover.");
+if (slotsVazios.length === 0) {
+  console.log("Nenhum slot precisa de session — todas mantidas.");
+  reporta(0);
   process.exit(0);
 }
 
-console.log("Pastas que serao processadas nesta rodada: " + lote.length);
-console.log("");
-
-// guarda as pastas de telefone tocadas pra checar se ficaram vazias depois
+// 3) move 1 candidato por slot vazio, até acabar um dos dois
+const n = Math.min(slotsVazios.length, candidatos.length);
 const telefonesTocados = new Set();
-
-for (let i = 0; i < lote.length; i++) {
-  const item = lote[i];
-  const pastaNumero = i + 1;
-  const pastaDestino = path.join(desktop, String(pastaNumero));
+let movidas = 0;
+for (let k = 0; k < n; k++) {
+  const slotNum = slotsVazios[k];
+  const item = candidatos[k];
+  const pastaDestino = path.join(desktop, String(slotNum));
 
   let caminhoDestino = path.join(pastaDestino, item.nome);
   if (fs.existsSync(caminhoDestino)) {
-    caminhoDestino = path.join(
-      pastaDestino,
-      item.nome + "" + Date.now() + "" + i
-    );
+    caminhoDestino = path.join(pastaDestino, item.nome + "" + Date.now() + "" + k);
   }
 
-  console.log(item.telefone + "/" + item.nome + " -> pasta " + pastaNumero);
+  // mantém o formato "<telefone>/<numero>-<n> -> pasta N" (o orquestrador lê isto)
+  console.log(item.telefone + "/" + item.nome + " -> pasta " + slotNum);
   telefonesTocados.add(item.telefone);
 
   if (TESTE) {
     console.log("  [TESTE] " + item.caminho + " => " + caminhoDestino);
   } else {
-    // copia recursivo + apaga original
     fs.cpSync(item.caminho, caminhoDestino, { recursive: true });
     fs.rmSync(item.caminho, { recursive: true, force: true });
     console.log("  MOVIDO " + item.nome);
+    movidas++;
   }
 }
 
-console.log("");
-
-// Apaga as pastas de telefone que ficaram vazias
-console.log("Verificando pastas de telefone vazias...");
+// 4) limpa pastas de telefone que ficaram vazias no pool
 for (const telefone of telefonesTocados) {
   const caminhoTelefone = path.join(origem, telefone);
   if (!fs.existsSync(caminhoTelefone)) continue;
-
-  const restante = fs.readdirSync(caminhoTelefone);
-  if (restante.length === 0) {
-    if (TESTE) {
-      console.log("  [TESTE] apagaria pasta vazia: " + telefone);
-    } else {
-      fs.rmSync(caminhoTelefone, { recursive: true, force: true });
-      console.log("  APAGADA pasta vazia: " + telefone);
-    }
-  } else {
-    console.log(
-      "  MANTIDA " + telefone + " (ainda tem " + restante.length + " item(ns))"
-    );
+  if (fs.readdirSync(caminhoTelefone).length === 0 && !TESTE) {
+    fs.rmSync(caminhoTelefone, { recursive: true, force: true });
+    console.log("APAGADA pasta vazia: " + telefone);
   }
 }
 
-console.log("");
-console.log("Rodada finalizada.");
-
-if (TESTE) {
-  console.log("");
-  console.log("Modo TESTE ativo.");
-  console.log("Para mover de verdade, troque:");
-  console.log("const TESTE = true;");
-  console.log("por:");
-  console.log("const TESTE = false;");
-}
+reporta(movidas);
+process.exit(0);

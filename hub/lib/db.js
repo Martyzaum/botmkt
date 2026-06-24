@@ -97,7 +97,7 @@ export function inventTelefones(batch, tenant, rows) {
 }
 
 // rec: { tenant, batch, agent, wave, leased:[keys], pendingAfter, resumo,
-//        slotSessions:{slot:subsession}, committed:[units], exhausted:[units] }
+//        slotUnits:{slot:key}, slotSessions:{slot:subsession}, committed:[units], exhausted:[units] }
 // resumo = RESULTADO_JSON do start-all: { sucesso:[], travado:[], erro:[], slots:[{slot,status,motivo}] }
 export function recordWave(rec) {
   const ts = now();
@@ -106,6 +106,10 @@ export function recordWave(rec) {
   const tenant = rec.tenant || 'default';
   const wave = rec.wave | 0;
   const slotSessions = rec.slotSessions || {};
+  // slot -> telefone (key): mapa REAL desta onda (session-aware). Sem ele, cai no
+  // positional leased[slot-1] (compat com playbooks antigos).
+  const slotUnits = rec.slotUnits || null;
+  const unitOfSlot = (slot) => (slotUnits ? (slotUnits[slot] ?? null) : numeroDoSlot(leased, slot));
   const wid = insWave.run(
     ts, tenant, rec.batch, rec.agent, wave,
     JSON.stringify(leased), rec.pendingAfter ?? null,
@@ -113,7 +117,7 @@ export function recordWave(rec) {
   ).lastInsertRowid;
 
   for (const s of r.slots || []) {
-    const unit = numeroDoSlot(leased, s.slot);
+    const unit = unitOfSlot(s.slot);
     const subsession = slotSessions[s.slot] || null;
     const phone = unit ? (phoneOf.get(rec.batch, unit)?.phone ?? null) : null;
     insSlot.run(wid, ts, tenant, rec.batch, rec.agent, wave, s.slot, s.status, unit, s.motivo || null, subsession, phone);

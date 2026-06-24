@@ -166,4 +166,11 @@ const beat = setInterval(() => {
 
 out(`\n===== START slot ${SLOT} @ ${ts()} | log=${LOGFILE} =====`);
 emit("SUP", `supervisor on | entry=${ENTRY} | inatividade=${Math.round(INACTIVITY_MS / 1000)}s`);
-start();
+// sem 'session' provisionada => o bot ficaria pedindo "Digite seu numero" no
+// stdin pra sempre. Falha RÁPIDO (slot vazio / pool seco) em vez de travar
+// INACTIVITY_MS inteiro. (SKIP_SESSION_CHECK=1 desliga, se o bot criar a session.)
+if (process.env.SKIP_SESSION_CHECK !== "1" && !fs.existsSync(path.join(process.cwd(), "session"))) {
+  finish("erro", 1, "sem session (slot vazio / pool seco)");
+} else {
+  start();
+}
