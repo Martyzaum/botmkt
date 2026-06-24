@@ -16,6 +16,7 @@
 //    BOT_ENTRY      arquivo do bot (default: main.js)
 //    INACTIVITY_MS  tempo sem log = travado (default: 240000 = 4min)
 //    MAX_RESTARTS   restarts em caso de crash (default: 3)
+//    MAX_RECONEXOES quedas/reconexões antes de desistir (default: 3)
 //    HEARTBEAT_MS   sinal de vida do supervisor (default: 30000)
 //
 //  >>> Fonte unica. Deploy para os slots com deploy-index.js <<<
@@ -58,6 +59,14 @@ const isSucesso = (line) => {
   const n = norm(line);
   return SUCESSO_N.some((m) => n.includes(m));
 };
+
+// Session CAINDO/MORTA: o bot fica pedindo "Digite seu numero" / "CONEXAO
+// FECHADA - RECONECTANDO" em loop. Como ele IMPRIME, a inatividade nunca
+// dispara e sem isto só morreria no teto global (45min). Conta as quedas e
+// desiste rápido. Uma session VIVA conecta direto e nunca imprime isso.
+const MORTE = /RECONECTANDO|CONEX\S* FECHADA|DIGITE SEU N/i;
+const MAX_RECONEXOES = Number(process.env.MAX_RECONEXOES || 3);
+let reconexoes = 0;
 
 const ts = () => new Date().toISOString();
 const emit = (tag, msg) => out(`[${ts()}][slot ${SLOT}][${tag}] ${msg}`);
@@ -103,7 +112,12 @@ function handleLine(line) {
   if (!line.trim()) return;
   lastActivity = Date.now();
   out(`[${ts()}][slot ${SLOT}] ${line}`); // relay carimbado
-  if (!done && isSucesso(line)) finish("sucesso", 0, line.trim());
+  if (done) return;
+  if (isSucesso(line)) { finish("sucesso", 0, line.trim()); return; }
+  // session caindo em loop -> desiste rápido (em vez de esperar o teto global)
+  if (MORTE.test(line) && ++reconexoes >= MAX_RECONEXOES) {
+    finish("travado", 2, `session caindo: ${reconexoes} queda(s)/reconexao(oes)`);
+  }
 }
 
 function start() {

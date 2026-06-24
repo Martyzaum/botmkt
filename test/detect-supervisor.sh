@@ -42,6 +42,12 @@ chk "D: sem session -> erro na hora" "$(status D)" "erro"
 mkslot E 'console.log("processando");console.log("ENVIO DA BROADCAST TERMINADO");'
 run E; chk "E: marcador 'BROADCAST TERMINADO' -> sucesso" "$(status E)" "sucesso"
 
+# F) session em LOOP de reconexao -> desiste rapido pelo contador (nao pelo timeout)
+mkslot F 'console.log("BroadCast iniciado");for(let i=0;i<3;i++)console.log("Digite seu numero ... CONEXAO FECHADA - RECONECTANDO");setInterval(()=>{},1e9);'
+run F; chk "F: loop de reconexao -> travado" "$(status F)" "travado"
+motivoF="$(python3 -c "import json;print(json.load(open('$DESK/_logs/slot-F.result.json'))['motivo'])" 2>/dev/null)"
+case "$motivoF" in *caindo*) echo "  ✓ F: detectou pela queda, nao pelo timeout ($motivoF)"; PASS=$((PASS+1));; *) echo "  ✗ F: esperava motivo 'session caindo', veio: $motivoF"; FAIL=$((FAIL+1));; esac
+
 rm -rf "$T"
 echo ""
 echo "================= DETECT: $PASS ok / $FAIL falha(s) ================="
