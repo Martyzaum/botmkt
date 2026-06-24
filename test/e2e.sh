@@ -136,6 +136,14 @@ done
 grep -q BBB "$DESK/1/DADOS/TEXTO.txt" 2>/dev/null && no "slot 1 vazou link BBB" || ok "slot 1 sem link de outra session"
 grep -q AAA "$DESK/2/DADOS/TEXTO.txt" 2>/dev/null && no "slot 2 vazou link AAA" || ok "slot 2 sem link de outra session"
 
+# ===== C2) SESSION-KEEPING: troca a session SÓ do slot que falhou =====
+echo "-- C2) onda 2: mantém a session boa, limpa só a do slot que falhou --"
+DESKTOP_DIR="$DESK" SLOTS_LIMPAR=2 node "$NEY/limpar-sessions.js" >/dev/null 2>&1
+chk "onda 2: slot 1 MANTEVE a session boa" "$(cat "$DESK/1/session/session-link.txt" 2>/dev/null)" "https://oferta/AAA"
+[ ! -e "$DESK/2/session" ] && ok "onda 2: slot 2 (falhou) teve a session removida" || no "onda 2: slot 2 ainda tinha session"
+MS="$(DESKTOP_DIR="$DESK" node "$NEY/movimenta-sessions.js")"
+chk "onda 2: comSession conta o slot mantido" "$(echo "$MS" | grep -oE 'comSession=[0-9]+' | cut -d= -f2)" "1"
+
 # ================= D) RASTREIO (recordWave) =================
 echo "-- D) rastreio: recordWave -> inventário usado/erro --"
 cat > playbooks/_e2e_rec.js <<'EOF'
@@ -150,6 +158,16 @@ chk "telefone erro (esgotado)" "$(echo "$INV2" | py "d['telefones']['erro']")" "
 ERR="$(web "$HUB/erros?batch=$BATCH")"
 chk "/erros traz o vínculo (session)" "$(echo "$ERR" | py "d['erros'][0]['session']")" "5522222222222-1"
 chk "/erros traz o phone real" "$(echo "$ERR" | py "d['erros'][0]['phone']")" "5511999990002"
+
+# ================= E) LOGS AO VIVO + FILA AO VIVO =================
+echo "-- E) logs ao vivo (VPS->hub->painel) + /queue --"
+TS="2026-06-24T03:00:00.000Z"
+api -H "content-type: application/json" -d "{\"id\":\"e2e-vps01\",\"tenant\":\"$TENANT\",\"lines\":[\"[$TS][slot 1] conectado\",\"[$TS][slot 1] ENVIO DA BROADCAST TERMINADO\"]}" "$HUB/agent/logs" >/dev/null
+LG="$(web "$HUB/logs?tail=80")"
+chk "logs: a VPS do tenant aparece" "$(echo "$LG" | py "str(any(a['agent']=='e2e-vps01' for a in d['agents']))")" "True"
+chk "logs: linha de sucesso capturada" "$(echo "$LG" | py "str(any('TERMINADO' in l for a in d['agents'] for l in a['lines']))")" "True"
+Q="$(api "$HUB/queue?batch=$BATCH")"
+chk "/queue traz contadores ao vivo" "$(echo "$Q" | py "str(all(k in d for k in ('pending','leased','retrying','done')))")" "True"
 
 # ---------- cleanup ----------
 echo "-- cleanup --"
