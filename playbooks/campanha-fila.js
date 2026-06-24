@@ -50,6 +50,12 @@ const movedSessions = (stdout) => {
   if (/Nenhuma subpasta/i.test(stdout || '')) return 0;
   return null; // desconhecido -> segue
 };
+// slot -> subsession, do stdout do movimenta-sessions ("<telefone>/<numero>-<n> -> pasta N")
+const parseSlotSessions = (stdout) => {
+  const map = {};
+  for (const m of (stdout || '').matchAll(/^.+?\/(\S+)\s*->\s*pasta\s*(\d+)/gim)) map[Number(m[2])] = m[1];
+  return map;
+};
 
 export const meta = { name: 'campanha-fila', description: 'Loop pull em ondas (sessions+telefones) por tenant' };
 
@@ -154,9 +160,15 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
       if (rr.requeued.length) log(`${tag} ↺ ${rr.requeued.length} número(s) de volta à fila p/ retry`);
       if (rr.exhausted.length) { acc.descartados += rr.exhausted.length; log(`${tag} ✖ ${rr.exhausted.length} esgotaram ${maxRetries} tentativas`); }
 
-      // grava a onda no banco
+      // grava a onda no banco + vínculo session↔telefone↔resultado e inventário
       const st = await queueStatus(batch);
-      recordWave({ tenant: args.tenant || 'default', batch, agent, wave, leased: units.map((u) => u.key), pendingAfter: st.pending, resumo: r });
+      recordWave({
+        tenant: args.tenant || 'default', batch, agent, wave,
+        leased: units.map((u) => u.key), pendingAfter: st.pending, resumo: r,
+        slotSessions: parseSlotSessions(ms.stdout),     // slot -> subsession (session usada)
+        committed: okUnits.map((u) => u.key),           // telefone -> enviado
+        exhausted: rr.exhausted,                        // telefone -> erro (esgotou retries)
+      });
     }
     log(`[${agent}] fim: ${acc.ondas} onda(s) | sucesso=${acc.sucesso} travado=${acc.travado} erro=${acc.erro} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL DE SESSIONS SECO' : ''}`);
     return acc;

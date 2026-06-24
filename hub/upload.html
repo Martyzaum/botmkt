@@ -216,6 +216,21 @@
   .badge.ok{background:var(--ok-bg);color:var(--ok)}
   .badge.warn{background:var(--warn-bg);color:var(--warn)}
   .badge.err{background:var(--err-bg);color:var(--err)}
+  /* inventário */
+  .inv-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:640px){ .inv-grid{grid-template-columns:1fr} }
+  .inv-box{border:1px solid var(--border);border-radius:12px;padding:12px 13px;background:var(--surface-2)}
+  .inv-h{font-weight:700;font-size:13.5px;margin-bottom:9px}
+  .inv-counts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+  .inv-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:12px;
+    font-weight:700;border:1px solid var(--border);color:var(--muted)}
+  .inv-pill b{font-weight:800}
+  .inv-pill.ok{background:var(--ok-bg);color:var(--ok);border-color:transparent}
+  .inv-pill.warn{background:var(--warn-bg);color:var(--warn);border-color:transparent}
+  .inv-pill.err{background:var(--err-bg);color:var(--err);border-color:transparent}
+  .inv-pill.pend{background:var(--brand-weak);color:var(--brand);border-color:transparent}
+  .inv-pend summary{cursor:pointer;color:var(--muted);font-weight:600;font-size:12px}
+  .inv-pend .list{margin-top:6px;max-height:160px;overflow:auto;font:12px/1.6 ui-monospace,monospace;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -343,6 +358,13 @@
     </div>
     <div class="stats" id="mon-stats"></div>
     <div class="muted" id="mon-sub" style="margin:-4px 0 16px"></div>
+    <section class="card">
+      <div class="card-h"><span class="step">≡</span><div><h2>Inventário</h2><p class="hint">o que foi subido: usado / erro / pending</p></div></div>
+      <div class="inv-grid">
+        <div class="inv-box"><div class="inv-h">Sessions <span class="muted" id="inv-s-tot"></span></div><div id="inv-sessions"></div></div>
+        <div class="inv-box"><div class="inv-h">Telefones <span class="muted" id="inv-t-tot"></span></div><div id="inv-telefones"></div></div>
+      </div>
+    </section>
     <section class="card">
       <div class="card-h"><span class="step">↻</span><div><h2>Ondas recentes</h2><p class="hint">resultado por VPS/onda + restantes na fila</p></div></div>
       <div style="overflow:auto"><table class="tbl" id="mon-waves"></table></div>
@@ -610,12 +632,13 @@ async function loadMonitor(){
   if(!batch){ $('mon-stats').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
   $('mon-status').textContent = 'atualizando…';
   try{
-    const [st, wv, er] = await Promise.all([
+    const [st, wv, er, inv] = await Promise.all([
       api('/stats?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/waves?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ waves: [] })),
       api('/erros?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ erros: [] })),
+      api('/inventory?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
     ]);
-    renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []);
+    renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
 }
@@ -647,14 +670,35 @@ function renderWaves(waves){
 function renderErros(erros){
   const t = $('mon-erros');
   if(!erros.length){ t.innerHTML = '<tr><td class="empty">nenhum número com problema 🎉</td></tr>'; return; }
-  let h = '<tr><th>número</th><th>status</th><th>motivo</th><th>VPS/onda</th></tr>';
+  let h = '<tr><th>telefone</th><th>session</th><th>status</th><th>motivo</th><th>VPS/onda</th></tr>';
   for(const e of erros){
     const cls = e.status === 'erro' ? 'err' : 'warn';
-    h += '<tr><td>' + esc(e.numero || '—') + '</td><td><span class="badge ' + cls + '">' + esc(e.status) + '</span></td>'
-      + '<td class="muted" style="white-space:normal;max-width:340px">' + esc(e.motivo || '—') + '</td>'
+    h += '<tr><td>' + esc(e.phone || e.numero || '—') + '</td><td>' + esc(e.session || '—') + '</td>'
+      + '<td><span class="badge ' + cls + '">' + esc(e.status) + '</span></td>'
+      + '<td class="muted" style="white-space:normal;max-width:300px">' + esc(e.motivo || '—') + '</td>'
       + '<td>' + esc(e.agent) + ' / ' + (e.wave|0) + '</td></tr>';
   }
   t.innerHTML = h;
+}
+// ── inventário (pending/usado/erro) ──
+function invPill(cls, label, n){ return '<span class="inv-pill ' + cls + '">' + (n != null ? '<b>' + n + '</b> ' : '') + label + '</span>'; }
+function invPend(list, fmt){
+  list = list || [];
+  if(!list.length) return '<div class="muted" style="font-size:12px">nada pending 🎉</div>';
+  return '<details class="inv-pend"><summary>ver ' + list.length + ' pending</summary><div class="list">' + list.map(fmt).join('<br>') + '</div></details>';
+}
+function renderInventory(inv){
+  const s = inv.sessions || {}, t = inv.telefones || {};
+  $('inv-s-tot').textContent = '· ' + (s.total || 0) + ' total';
+  $('inv-t-tot').textContent = '· ' + (t.total || 0) + ' total';
+  $('inv-sessions').innerHTML = '<div class="inv-counts">'
+    + invPill('pend', 'pending', s.pending || 0) + invPill('ok', 'usadas', s.usada || 0)
+    + (s.sucesso ? invPill('ok', '✓ ' + s.sucesso) : '') + (s.travado ? invPill('warn', '⚠ ' + s.travado) : '') + (s.erro ? invPill('err', '✗ ' + s.erro) : '')
+    + '</div>' + invPend(s.pendingList, x => esc(x.subsession));
+  $('inv-telefones').innerHTML = '<div class="inv-counts">'
+    + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0) + invPill('err', 'erro', t.erro || 0)
+    + invPill('', (t.tentativas || 0) + ' tentativas')
+    + '</div>' + invPend(t.pendingList, x => esc(x.phone || x.unit));
 }
 $('mon-refresh').onclick = loadMonitor;
 $('mon-batch').onchange = loadMonitor;

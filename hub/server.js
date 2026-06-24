@@ -346,33 +346,39 @@ const server = http.createServer(async (req, res) => {
       if (kind === 'telefones') {
         const norm = (s) => String(s).replaceAll('\\', '/');
         const have = new Set(entries.map((e) => norm(e.name)));
-        const extra = [];
+        const extra = [], telInv = [];
         for (const e of entries) {
           const name = norm(e.name), slash = name.lastIndexOf('/');
           const dir = slash >= 0 ? name.slice(0, slash + 1) : '', base = slash >= 0 ? name.slice(slash + 1) : name;
           const m = base.match(/^TELEFONES-(\d+)\.txt$/i);
           if (!m) continue;
+          telInv.push({ unit: `num-${m[1]}`, phone: e.data.toString('utf8').trim() }); // inventário: o número dentro do txt
           const copia = `${dir}TELEFONES-${m[1]} - Copia.txt`;
           if (!have.has(copia)) { have.add(copia); extra.push({ name: copia, data: e.data }); copias++; }
         }
         entries.push(...extra);
+        try { db.inventTelefones(batch, A.tenant, telInv); } catch (e) { /* inventário best-effort */ }
       }
-      // sessions + link: grava session-link.txt DENTRO de cada subpasta <telefone>/<numero>-<n>
-      // (o link viaja junto da session no movimenta/renomeia → vira <slot>\session\session-link.txt).
+      // sessions: inventaria cada subpasta <telefone>/<numero>-<n> e, se houver link,
+      // grava session-link.txt DENTRO dela (o link viaja junto da session no
+      // movimenta/renomeia → vira <slot>\session\session-link.txt).
       let links = 0;
-      if (kind === 'sessions' && link) {
+      if (kind === 'sessions') {
         const norm = (s) => String(s).replaceAll('\\', '/');
         const have = new Set(entries.map((e) => norm(e.name)));
-        const data = Buffer.from(String(link).trim(), 'utf8'), seen = new Set();
+        const data = link ? Buffer.from(String(link).trim(), 'utf8') : null;
+        const seen = new Set(), sessInv = [], extraL = [];
         for (const e of entries) {
           const parts = norm(e.name).split('/');
           if (parts.length < 2 || !/^\d+-\d+$/.test(parts[1])) continue;
           const unit = `${parts[0]}/${parts[1]}`;
           if (seen.has(unit)) continue;
           seen.add(unit);
-          const lname = `${unit}/session-link.txt`;
-          if (!have.has(lname)) { entries.push({ name: lname, data }); links++; }
+          sessInv.push({ telefone: parts[0], subsession: parts[1], link: link || null });
+          if (data) { const lname = `${unit}/session-link.txt`; if (!have.has(lname)) { have.add(lname); extraL.push({ name: lname, data }); links++; } }
         }
+        entries.push(...extraL);
+        try { db.inventSessions(batch, A.tenant, sessInv); } catch (e) { /* inventário best-effort */ }
       }
       let n = 0;
       for (const e of entries) { await store.put(storageBatch, kind, e.name, e.data); n++; }
@@ -449,6 +455,12 @@ const server = http.createServer(async (req, res) => {
     if (!batch) return send(res, 400, { error: 'batch obrigatório' });
     const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
     return send(res, 200, { erros: db.errosByBatch(batch, tenant) });
+  }
+  if (p === '/inventory' && req.method === 'GET') {
+    const batch = url.searchParams.get('batch');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
+    return send(res, 200, db.inventoryByBatch(batch, tenant));
   }
   if (p === '/waves' && req.method === 'GET') {
     const batch = url.searchParams.get('batch');
