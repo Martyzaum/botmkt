@@ -362,9 +362,9 @@
       <span class="muted" id="mon-status"></span>
     </div>
     <div class="muted" id="mon-run" style="margin:-6px 0 14px"></div>
-    <div class="stats" id="mon-queue" style="margin-bottom:10px"></div>
-    <div class="stats" id="mon-stats"></div>
-    <div class="muted" id="mon-sub" style="margin:-4px 0 16px"></div>
+    <div id="mon-progress" style="margin-bottom:14px"></div>
+    <div class="stats" id="mon-queue"></div>
+    <div class="muted" id="mon-sub" style="margin:10px 0 16px"></div>
     <section class="card">
       <div class="card-h"><span class="step">≡</span><div><h2>Inventário</h2><p class="hint">o que foi subido: usado / erro / pending</p></div></div>
       <div class="inv-grid">
@@ -373,7 +373,7 @@
       </div>
     </section>
     <section class="card">
-      <div class="card-h"><span class="step">↻</span><div><h2>Ondas recentes</h2><p class="hint">resultado por VPS/onda + restantes na fila</p></div></div>
+      <div class="card-h"><span class="step">↻</span><div><h2>Ondas recentes</h2><p class="hint">cada VPS por onda. "na fila" pode SUBIR: número que trava volta pra fila pra tentar de novo</p></div></div>
       <div style="overflow:auto"><table class="tbl" id="mon-waves"></table></div>
     </section>
     <section class="card">
@@ -644,7 +644,7 @@ async function fillMonBatches(){
 
 async function loadMonitor(){
   const batch = $('mon-batch').value;
-  if(!batch){ $('mon-stats').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
+  if(!batch){ $('mon-progress').innerHTML = ''; $('mon-queue').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
   $('mon-status').textContent = 'atualizando…';
   try{
     const [st, wv, er, inv, q, lg] = await Promise.all([
@@ -655,22 +655,38 @@ async function loadMonitor(){
       api('/queue?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/logs?tail=300').then(r => r.json()).catch(() => ({ agents: [] })),
     ]);
-    renderQueue(q); renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg);
+    renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg);
     refreshCampaign(batch);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
 }
-// fila AO VIVO (pending/processando/retry/concluído) — atualiza a cada ciclo
-function renderQueue(q){
+// barra de progresso: quantos LOTES já foram enviados
+function renderProgress(inv){
+  const t = (inv && inv.telefones) || {};
+  const total = t.total || 0, env = t.enviado || 0;
+  const pct = total ? Math.round(env / total * 100) : 0;
+  $('mon-progress').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;flex-wrap:wrap;gap:6px">'
+    + '<b style="font-size:15px">' + env + ' de ' + total + ' lotes enviados</b>'
+    + '<span class="muted">' + pct + '% · ' + (t.numeros || 0).toLocaleString('pt-BR') + ' números no total</span></div>'
+    + '<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;height:12px;overflow:hidden">'
+    + '<div style="width:' + pct + '%;height:100%;background:var(--ok);transition:width .3s"></div></div>';
+}
+// FUNIL dos telefones (soma = total): na fila + processando + enviados + descartados
+function renderQueue(q, inv){
   const box = $('mon-queue');
+  const t = (inv && inv.telefones) || {};
   if(!q || q.total == null){ box.innerHTML = ''; return; }
   const cards = [
-    { c:'info', n: q.pending ?? 0,  l:'pendente' },
-    { c:'warn', n: q.leased ?? 0,   l:'processando' },
-    { c:'',     n: q.retrying ?? 0, l:'retry' },
-    { c:'ok',   n: q.done ?? 0,     l:'concluído' },
+    { c:'info', n: q.pending ?? 0, l:'na fila',       sub: (q.retrying ? q.retrying + ' já tentadas' : 'esperando') },
+    { c:'warn', n: q.leased ?? 0,  l:'processando',   sub: 'numa VPS agora' },
+    { c:'ok',   n: t.enviado ?? 0, l:'enviados',      sub: 'concluídos' },
+    { c:'err',  n: t.erro ?? 0,    l:'descartados',   sub: 'falharam 3x' },
   ];
-  box.innerHTML = cards.map(c => '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div><div class="l">' + c.l + '</div></div>').join('');
+  box.innerHTML = cards.map(c =>
+    '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div>'
+    + '<div class="l">' + c.l + (c.sub ? '<br><span style="font-weight:400;opacity:.75">' + c.sub + '</span>' : '') + '</div></div>'
+  ).join('');
 }
 // logs ao vivo de TODAS as VPS do tenant, mesclados por horário, com auto-scroll
 function renderLogs(data){
@@ -693,22 +709,19 @@ function renderLogs(data){
   box.innerHTML = html;
   if(atBottom) box.scrollTop = box.scrollHeight;
 }
-function renderStats(s){
-  const cards = [
-    { c:'ok',   n: s.sucesso ?? 0,       l:'sucesso' },
-    { c:'warn', n: s.travado ?? 0,       l:'travado' },
-    { c:'err',  n: s.erro ?? 0,          l:'erro' },
-    { c:'info', n: s.restantes ?? '—',   l:'restantes na fila' },
-  ];
-  $('mon-stats').innerHTML = cards.map(c => '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div><div class="l">' + c.l + '</div></div>').join('');
-  $('mon-sub').textContent = (s.ondas != null)
-    ? (s.ondas || 0) + ' onda(s)' + (s.inicio ? ' · início ' + hhmmss(s.inicio) : '') + (s.fim ? ' · última ' + hhmmss(s.fim) : '')
+// linha de status (resumo das ondas) — sem cards, só texto claro
+function renderStatus(s){
+  $('mon-sub').textContent = (s && s.ondas != null)
+    ? (s.ondas || 0) + ' onda(s) rodadas'
+      + (s.travado ? ' · ' + s.travado + ' slot(s) travaram (session ruim)' : '')
+      + (s.inicio ? ' · início ' + hhmmss(s.inicio) : '')
+      + (s.fim ? ' · última ' + hhmmss(s.fim) : '')
     : 'sem dados ainda — a campanha grava aqui conforme roda';
 }
 function renderWaves(waves){
   const t = $('mon-waves');
   if(!waves.length){ t.innerHTML = '<tr><td class="empty">sem ondas ainda</td></tr>'; return; }
-  let h = '<tr><th>hora</th><th>VPS</th><th>onda</th><th>✓</th><th>⚠</th><th>✗</th><th>restantes</th></tr>';
+  let h = '<tr><th>hora</th><th>VPS</th><th>onda</th><th title="enviados">✓</th><th title="travados (session ruim)">⚠</th><th title="erro">✗</th><th title="quantos voltaram pra fila depois desta onda">na fila</th></tr>';
   for(const w of waves){
     h += '<tr><td>' + hhmmss(w.ts) + '</td><td>' + esc(w.agent) + '</td><td>' + (w.wave|0) + '</td>'
       + '<td style="color:var(--ok);font-weight:700">' + (w.sucesso|0) + '</td>'
@@ -743,8 +756,8 @@ function renderInventory(inv){
   $('inv-s-tot').textContent = '· ' + (s.total || 0) + ' total';
   $('inv-t-tot').textContent = '· ' + (t.total || 0) + ' lotes · ' + (t.numeros || 0).toLocaleString('pt-BR') + ' números';
   $('inv-sessions').innerHTML = '<div class="inv-counts">'
-    + invPill('pend', 'pending', s.pending || 0) + invPill('ok', 'usadas', s.usada || 0)
-    + (s.sucesso ? invPill('ok', '✓ ' + s.sucesso) : '') + (s.travado ? invPill('warn', '⚠ ' + s.travado) : '') + (s.erro ? invPill('err', '✗ ' + s.erro) : '')
+    + invPill('pend', 'não usadas', s.pending || 0) + invPill('ok', 'usadas', s.usada || 0)
+    + (s.travado ? invPill('warn', s.travado + ' travaram') : '') + (s.erro ? invPill('err', s.erro + ' erro') : '')
     + '</div>' + invPend(s.pendingList, x => esc(x.subsession));
   $('inv-telefones').innerHTML = '<div class="inv-counts">'
     + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0) + invPill('err', 'erro', t.erro || 0)

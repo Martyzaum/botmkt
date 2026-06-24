@@ -76,6 +76,7 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   if (!batch) throw new Error('passe o batch: play campanha-fila \'{"batch":"..."}\'');
   const WAVE = Number(args.wave || 16);
   const maxRetries = Number(args.maxRetries || 3);
+  const maxSemSucesso = Number(args.maxSemSucesso || 2); // desiste após N ondas seguidas com 0 envio
   const inactivity = Number(args.inactivity || 4 * 60 * 1000);
   const startTimeout = Number(args.startTimeout || 45 * 60 * 1000);
   const ags = args.agents && args.agents.length
@@ -109,10 +110,11 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   // abre/fecha os terminais de log da VPS automaticamente (default ON; windows:false desliga)
   const wantWindows = args.windows !== false;
   const loopAgente = async (agent) => {
-    const acc = { agent, ondas: 0, enviados: 0, retry: 0, descartados: 0, semResumo: 0, poolSeco: false };
+    const acc = { agent, ondas: 0, enviados: 0, retry: 0, descartados: 0, semResumo: 0, poolSeco: false, desistiu: false };
     // slots que falharam na onda ANTERIOR -> só esses trocam de session na próxima.
     // null = primeira onda (limpa todas as sessions pra começar do zero).
     let failedSlots = null;
+    let ondasSemSucesso = 0; // circuit breaker: ondas seguidas com 0 envio
     if (wantWindows) { try { await run(agent, ps('ver-logs.ps1', `-Slots ${WAVE}`)); } catch { /* janelas são best-effort */ } }
     try {
     for (;;) {
@@ -219,12 +221,21 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
         committed: okUnits.map((u) => u.key),
         exhausted: rr.exhausted,
       });
+
+      // circuit breaker: se várias ondas seguidas não enviam NADA, as sessions
+      // provavelmente estão mortas -> desiste em vez de moer o pool inteiro.
+      ondasSemSucesso = okUnits.length ? 0 : ondasSemSucesso + 1;
+      if (ondasSemSucesso >= maxSemSucesso) {
+        acc.desistiu = true;
+        log(`${tag} 🛑 desistindo: ${ondasSemSucesso} onda(s) seguidas com 0 envio (sessions provavelmente mortas)`);
+        break;
+      }
     }
     } finally {
       // fecha as janelas de log da VPS no fim (mesmo se algo deu erro no meio)
       if (wantWindows) { try { await run(agent, ps('fecha-logs.ps1')); } catch { /* best-effort */ } }
     }
-    log(`[${agent}] fim: ${acc.ondas} onda(s) | enviados=${acc.enviados} retry=${acc.retry} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL DE SESSIONS SECO' : ''}`);
+    log(`[${agent}] fim: ${acc.ondas} onda(s) | enviados=${acc.enviados} retry=${acc.retry} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL SECO' : ''}${acc.desistiu ? ' | DESISTIU (sessions mortas)' : ''}`);
     return acc;
   };
 
