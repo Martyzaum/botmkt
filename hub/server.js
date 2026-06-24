@@ -111,6 +111,46 @@ function readRaw(req) {
   });
 }
 
+// ---- sessions: extrair archive (zip|rar) + ingerir ---------------------
+// detecta rar pelo magic "Rar!"; senão trata como zip (unzip próprio zero-dep).
+async function extractArchive(buf) {
+  if (buf.length >= 4 && buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) {
+    const { createExtractorFromData } = await import('node-unrar-js');
+    const extractor = await createExtractorFromData({ data: Uint8Array.from(buf) });
+    const { files } = extractor.extract();
+    const out = [];
+    for (const f of files) {
+      if (f.fileHeader.flags.directory || !f.extraction) continue;
+      out.push({ name: f.fileHeader.name, data: Buffer.from(f.extraction) });
+    }
+    return out;
+  }
+  return unzip(buf); // zip -> [{name,data}] (diretórios ignorados)
+}
+
+// grava as subsessions <telefone>/<numero>-<n> no pool do batch, embute o link em
+// cada uma e inventaria. entries = [{name,data}]. retorna { novas:[unit], files }.
+async function ingestSessions(batch, tenant, entries, link) {
+  const norm = (s) => String(s).replaceAll('\\', '/');
+  const have = new Set(entries.map((e) => norm(e.name)));
+  const data = link ? Buffer.from(String(link).trim(), 'utf8') : null;
+  const seen = new Set(), sessInv = [], extraL = [], novas = [];
+  for (const e of entries) {
+    const parts = norm(e.name).split('/');
+    if (parts.length < 2 || !/^\d+-\d+$/.test(parts[1])) continue;
+    const unit = `${parts[0]}/${parts[1]}`;
+    if (seen.has(unit)) continue;
+    seen.add(unit); novas.push(unit);
+    sessInv.push({ telefone: parts[0], subsession: parts[1], link: link || null });
+    if (data) { const lname = `${unit}/session-link.txt`; if (!have.has(lname)) { have.add(lname); extraL.push({ name: lname, data }); } }
+  }
+  if (!novas.length) return { novas: [], files: 0 };
+  const all = [...entries, ...extraL];
+  try { db.inventSessions(batch, tenant, sessInv); } catch { /* inventário best-effort */ }
+  for (const e of all) await store.put(batch, 'sessions', e.name, e.data);
+  return { novas, files: all.length };
+}
+
 // ---- limites de distribuição -------------------------------------------
 async function loadLimits() {
   try { return JSON.parse(await readFile(LIMITS_FILE, 'utf8')); } catch { return {}; }
@@ -420,30 +460,44 @@ const server = http.createServer(async (req, res) => {
     const tenant = A.kind === 'session' ? A.tenant : (url.searchParams.get('tenant') || 'default');
     if (A.kind === 'session' && batch !== A.tenant && !batch.startsWith(A.tenant + '-')) return send(res, 403, { error: 'batch de outro tenant' });
     try {
-      const entries = unzip(await readRaw(req));
-      const norm = (s) => String(s).replaceAll('\\', '/');
-      const have = new Set(entries.map((e) => norm(e.name)));
-      const data = link ? Buffer.from(String(link).trim(), 'utf8') : null;
-      const seen = new Set(), sessInv = [], extraL = [], novas = [];
-      for (const e of entries) {
-        const parts = norm(e.name).split('/');
-        if (parts.length < 2 || !/^\d+-\d+$/.test(parts[1])) continue;
-        const unit = `${parts[0]}/${parts[1]}`;
-        if (seen.has(unit)) continue;
-        seen.add(unit); novas.push(unit);
-        sessInv.push({ telefone: parts[0], subsession: parts[1], link: link || null });
-        if (data) { const lname = `${unit}/session-link.txt`; if (!have.has(lname)) { have.add(lname); extraL.push({ name: lname, data }); } }
-      }
+      const { novas } = await ingestSessions(batch, tenant, unzip(await readRaw(req)), link);
       if (!novas.length) return send(res, 400, { error: 'nenhuma subsession <numero>-<n> encontrada no zip' });
-      entries.push(...extraL);
-      try { db.inventSessions(batch, tenant, sessInv); } catch { /* inventário best-effort */ }
-      for (const e of entries) await store.put(batch, 'sessions', e.name, e.data);
       // distribui SÓ as novas pras VPS online do tenant (não re-empurra as que já estão lá)
       const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
       if (!ativos.length) return send(res, 200, { ok: true, novas: novas.length, distribuido: 0, aviso: 'sessions subidas, mas nenhuma VPS online p/ distribuir' });
       const ds = await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas);
       const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
       return send(res, 200, { ok: true, novas: novas.length, distribuido, agentes: ativos });
+    } catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  // importar archive CRU (zip/rar) — "repack no servidor": extrai, lê a URL do .txt
+  // (vira o link), tira o wrapper, ingere as sessions e distribui. Link automático.
+  if (p === '/sessions/import' && req.method === 'POST') {
+    const batch = url.searchParams.get('batch');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (url.searchParams.get('tenant') || 'default');
+    if (A.kind === 'session' && batch !== A.tenant && !batch.startsWith(A.tenant + '-')) return send(res, 403, { error: 'batch de outro tenant' });
+    try {
+      const norm = (s) => String(s).replaceAll('\\', '/');
+      const entries = await extractArchive(await readRaw(req));
+      // content root = nível do .txt mais RASO (a URL); o resto são as sessions.
+      const txts = entries.filter((e) => /\.txt$/i.test(norm(e.name))).sort((a, b) => norm(a.name).split('/').length - norm(b.name).split('/').length);
+      if (!txts.length) return send(res, 400, { error: 'nenhum .txt (URL) dentro do arquivo' });
+      const txtPath = norm(txts[0].name), slash = txtPath.lastIndexOf('/');
+      const prefix = slash >= 0 ? txtPath.slice(0, slash + 1) : '';
+      const link = String(txts[0].data.toString('utf8')).trim().split(/\r?\n/)[0].trim();
+      if (!link) return send(res, 400, { error: '.txt vazio (sem URL)' });
+      // tira o wrapper (prefixo do content root) -> fica <telefone>/<numero>-<n>/...
+      const sess = entries
+        .filter((e) => !/\.txt$/i.test(norm(e.name)))
+        .map((e) => ({ name: norm(e.name).slice(prefix.length), data: e.data }))
+        .filter((e) => /^\d+\/\d+-\d+\//.test(e.name));
+      const { novas } = await ingestSessions(batch, tenant, sess, link);
+      if (!novas.length) return send(res, 400, { error: 'nenhuma session <telefone>/<numero>-<n> no arquivo', link });
+      const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
+      const ds = ativos.length ? await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas) : { results: [] };
+      const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
+      return send(res, 200, { ok: true, link, novas: novas.length, distribuido });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {
