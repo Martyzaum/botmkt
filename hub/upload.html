@@ -609,6 +609,10 @@ $('go').onclick = async () => {
 
 // ── acompanhamento da campanha ────────────────────────
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+// um TELEFONES-<n>.txt pode ter VÁRIOS números (1 por linha) -> resumir
+const phoneList = p => String(p || '').split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+const phoneSummary = p => { const n = phoneList(p); return n.length > 1 ? n.length + ' números' : (n[0] || '—'); };
+const fmtPhone = p => { const n = phoneList(p); return n.length > 1 ? esc(n[0]) + ' <span class="muted">+' + (n.length - 1) + '</span>' : esc(n[0] || '—'); };
 const hhmmss = (ts) => { try { return new Date(ts).toLocaleTimeString('pt-BR'); } catch(e){ return ts || ''; } };
 let monTimer = null;
 function stopMonAuto(){ if(monTimer){ clearInterval(monTimer); monTimer = null; } }
@@ -673,7 +677,7 @@ function renderErros(erros){
   let h = '<tr><th>telefone</th><th>session</th><th>status</th><th>motivo</th><th>VPS/onda</th></tr>';
   for(const e of erros){
     const cls = e.status === 'erro' ? 'err' : 'warn';
-    h += '<tr><td>' + esc(e.phone || e.numero || '—') + '</td><td>' + esc(e.session || '—') + '</td>'
+    h += '<tr><td>' + (e.phone ? fmtPhone(e.phone) : esc(e.numero || '—')) + '</td><td>' + esc(e.session || '—') + '</td>'
       + '<td><span class="badge ' + cls + '">' + esc(e.status) + '</span></td>'
       + '<td class="muted" style="white-space:normal;max-width:300px">' + esc(e.motivo || '—') + '</td>'
       + '<td>' + esc(e.agent) + ' / ' + (e.wave|0) + '</td></tr>';
@@ -698,7 +702,7 @@ function renderInventory(inv){
   $('inv-telefones').innerHTML = '<div class="inv-counts">'
     + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0) + invPill('err', 'erro', t.erro || 0)
     + invPill('', (t.tentativas || 0) + ' tentativas')
-    + '</div>' + invPend(t.pendingList, x => esc(x.phone || x.unit));
+    + '</div>' + invPend(t.pendingList, x => esc(x.unit) + ' · ' + esc(phoneSummary(x.phone)));
 }
 $('mon-refresh').onclick = loadMonitor;
 $('mon-batch').onchange = loadMonitor;
