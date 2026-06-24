@@ -352,10 +352,12 @@
   <div id="monitor" hidden>
     <div class="mon-bar">
       <select id="mon-batch" title="batch a acompanhar"></select>
+      <button id="mon-start" class="btn btn-primary" style="width:auto" type="button">▶ Iniciar campanha</button>
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
     </div>
+    <div class="muted" id="mon-run" style="margin:-6px 0 14px"></div>
     <div class="stats" id="mon-stats"></div>
     <div class="muted" id="mon-sub" style="margin:-4px 0 16px"></div>
     <section class="card">
@@ -643,6 +645,7 @@ async function loadMonitor(){
       api('/inventory?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
     ]);
     renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv);
+    refreshCampaign(batch);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
 }
@@ -707,6 +710,42 @@ function renderInventory(inv){
 $('mon-refresh').onclick = loadMonitor;
 $('mon-batch').onchange = loadMonitor;
 $('mon-auto').onchange = startMonAuto;
+
+// ── iniciar campanha pelo painel ──────────────────────
+async function refreshCampaign(batch){
+  let run = null;
+  try{
+    const r = await api('/runs');
+    if(r.ok){ run = ((await r.json()).runs || [])
+      .filter(x => x.playbook === 'campanha-fila' && x.args && x.args.batch === batch)
+      .sort((a, b) => a.startedAt < b.startedAt ? 1 : -1)[0] || null; }
+  }catch(e){}
+  const btn = $('mon-start'), info = $('mon-run');
+  if(!run){ btn.disabled = false; btn.textContent = '▶ Iniciar campanha'; info.textContent = ''; return; }
+  let last = '';
+  try{ const rr = await api('/run/' + run.id); if(rr.ok){ const L = (await rr.json()).log || []; last = L.length ? L[L.length - 1].msg : ''; } }catch(e){}
+  if(run.status === 'running'){
+    btn.disabled = true; btn.textContent = '■ rodando…';
+    info.innerHTML = '<span class="badge warn">rodando</span> ' + esc(last);
+  } else {
+    btn.disabled = false; btn.textContent = '▶ Iniciar campanha';
+    const cls = run.status === 'error' ? 'err' : 'ok';
+    info.innerHTML = '<span class="badge ' + cls + '">' + esc(run.status === 'done' ? 'concluída' : run.status) + '</span> ' + esc(run.error || last);
+  }
+}
+$('mon-start').onclick = async () => {
+  const batch = $('mon-batch').value;
+  if(!batch){ alert('selecione um batch'); return; }
+  if(!confirm('Iniciar a campanha do batch ' + batch + '?\n\nIsso vai DISPARAR os envios de verdade nas VPS ativas.')) return;
+  $('mon-start').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">iniciando…</span>';
+  try{
+    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
+    const j = await r.json().catch(() => ({}));
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha iniciada'; loadMonitor(); }
+    else if(r.status === 409){ $('mon-run').innerHTML = '<span class="badge warn">já rodando</span> nesse batch'; loadMonitor(); }
+    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-start').disabled = false; }
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-start').disabled = false; }
+};
 
 // ── bootstrap: decide login vs painel ─────────────────
 (async () => { const m = await whoami(); if(m) await showApp(m); else showLogin(); })();

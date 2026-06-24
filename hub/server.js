@@ -200,7 +200,7 @@ async function loadPlaybook(name) {
 }
 async function runPlaybook(name, args) {
   const mod = await loadPlaybook(name);
-  const run = { id: crypto.randomUUID(), playbook: name, status: 'running', log: [], startedAt: now(), finishedAt: null, error: null, result: null };
+  const run = { id: crypto.randomUUID(), playbook: name, args: args || {}, status: 'running', log: [], startedAt: now(), finishedAt: null, error: null, result: null };
   runs.set(run.id, run);
   const log = (msg) => { const line = { t: now(), msg: String(msg) }; run.log.push(line); console.log(`[run ${run.id.slice(0, 8)}] ${line.msg}`); };
   const ctx = {
@@ -475,16 +475,33 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { playbooks: files.filter((f) => f.endsWith('.js')).map((f) => f.replace(/\.js$/, '')) });
   }
   if (p.startsWith('/play/') && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente admin (HUB_TOKEN); pelo painel use /campaign/start' });
     const b = await readBody(req);
     try { const run = await runPlaybook(p.slice('/play/'.length), b.args); return send(res, 200, { runId: run.id, status: run.status }); }
     catch (e) { return send(res, 400, { error: e.message }); }
   }
+  // iniciar campanha pelo painel: tenant FIXADO pela sessão; trava anti-duplicado por batch.
+  if (p === '/campaign/start' && req.method === 'POST') {
+    const b = await readBody(req);
+    const batch = b.batch;
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (b.tenant || 'default');
+    const running = [...runs.values()].find((r) => r.playbook === 'campanha-fila' && r.status === 'running' && r.args?.batch === batch && (r.args?.tenant || 'default') === tenant);
+    if (running) return send(res, 409, { error: 'já há uma campanha rodando nesse batch', runId: running.id });
+    try { const run = await runPlaybook('campanha-fila', { batch, tenant }); return send(res, 200, { runId: run.id, status: run.status }); }
+    catch (e) { return send(res, 400, { error: e.message }); }
+  }
   if (p.startsWith('/run/') && req.method === 'GET') {
     const run = runs.get(p.slice('/run/'.length));
-    return run ? send(res, 200, run) : send(res, 404, { error: 'run desconhecido' });
+    if (!run) return send(res, 404, { error: 'run desconhecido' });
+    if (A.kind === 'session' && (run.args?.tenant || 'default') !== A.tenant) return send(res, 403, { error: 'run de outro tenant' });
+    return send(res, 200, run);
   }
-  if (p === '/runs' && req.method === 'GET')
-    return send(res, 200, { runs: [...runs.values()].map(({ log, ...r }) => ({ ...r, logCount: log.length })) });
+  if (p === '/runs' && req.method === 'GET') {
+    let list = [...runs.values()];
+    if (A.kind === 'session') list = list.filter((r) => (r.args?.tenant || 'default') === A.tenant);
+    return send(res, 200, { runs: list.map(({ log, ...r }) => ({ ...r, logCount: log.length })) });
+  }
 
   return send(res, 404, { error: 'rota desconhecida' });
 });
