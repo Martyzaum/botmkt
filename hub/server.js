@@ -235,6 +235,7 @@ async function runPlaybook(name, args) {
     resetQueue: (batch) => workqueue.reset(batch),
     returnLease: (batch, units) => workqueue.returnLease(batch, units),
     retryLease: (batch, units, max) => workqueue.retryLease(batch, units, max),
+    requeue: (batch, units) => workqueue.requeue(batch, units), // volta pro fim sem penalizar (session ruim)
     recordWave: (rec) => { try { return db.recordWave(rec); } catch (e) { log(`⚠ db: ${e.message}`); return null; } },
     syncTelefones: (agent, batch, units, opts = {}) =>
       enqueueAndWait(

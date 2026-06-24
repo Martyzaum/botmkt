@@ -71,11 +71,10 @@ const parseSlotNumeros = (stdout) => {
 
 export const meta = { name: 'campanha-fila', description: 'Loop pull em ondas (sessions+telefones) por tenant' };
 
-export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args, isAborted }) {
+export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, requeue, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args, isAborted }) {
   const batch = args.batch;
   if (!batch) throw new Error('passe o batch: play campanha-fila \'{"batch":"..."}\'');
   const WAVE = Number(args.wave || 16);
-  const maxRetries = Number(args.maxRetries || 3);
   const maxSemSucesso = Number(args.maxSemSucesso || 2); // desiste após N ondas seguidas com 0 envio
   const inactivity = Number(args.inactivity || 4 * 60 * 1000);
   const startTimeout = Number(args.startTimeout || 45 * 60 * 1000);
@@ -201,10 +200,13 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
       }
       if (semSlot.length) await returnLease(batch, semSlot); // não rodou -> volta sem gastar tentativa
       await commitUnits(batch, okUnits.map((u) => u.key));
-      const rr = await retryLease(batch, badUnits, maxRetries);
-      acc.enviados += okUnits.length; acc.retry += rr.requeued.length; acc.descartados += rr.exhausted.length;
-      if (rr.requeued.length) log(`${tag} ↺ ${rr.requeued.length} número(s) de volta à fila p/ retry`);
-      if (rr.exhausted.length) log(`${tag} ✖ ${rr.exhausted.length} esgotaram ${maxRetries} tentativas`);
+      // o NÚMERO não falha (o bot pula inválido e ainda dá sucesso) — quem falha é
+      // a SESSION. Então o lote que não enviou volta pro FIM da fila SEM penalizar
+      // e SEM descartar: retry infinito até uma session boa enviar (você alimenta
+      // session). Por isso nunca aparece "descartado".
+      const rr = await requeue(batch, badUnits);
+      acc.enviados += okUnits.length; acc.retry += rr.requeued.length;
+      if (rr.requeued.length) log(`${tag} ↺ ${rr.requeued.length} lote(s) de volta à fila (session ruim — sem penalizar)`);
 
       // grava a onda no banco + vínculo session↔telefone↔resultado e inventário.
       // filtra o resumo p/ só os slots ATIVOS (os vazios falham na hora e
@@ -223,7 +225,7 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
         slotUnits: slotUnit,                            // slot -> telefone (key) REAL desta onda
         slotSessions: parseSlotSessions(ms.stdout),     // slot -> subsession movida nesta onda
         committed: okUnits.map((u) => u.key),
-        exhausted: rr.exhausted,
+        exhausted: [],   // número não é descartado por falha de session (retry infinito)
       });
 
       // circuit breaker: se várias ondas seguidas não enviam NADA, as sessions

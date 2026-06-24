@@ -84,6 +84,18 @@ export async function returnLease(batch, units) {
   await persist(batch, q);
 }
 
+// o NÚMERO não falhou — quem falhou foi a SESSION. Devolve pro FIM da fila SEM
+// contar tentativa e SEM descartar: fica em retry "infinito" até uma session boa
+// enviar (o usuário vai alimentando session). Difere do returnLease (vai pro FIM,
+// não pra frente -> deixa a fila circular em vez de re-tentar o mesmo na hora).
+export async function requeue(batch, units) {
+  const q = await ensure(batch);
+  for (const u of units) q.leased.delete(u.key);
+  q.pending.push(...units);
+  await persist(batch, q);
+  return { requeued: units.map((u) => u.key) };
+}
+
 // erro num número: conta a tentativa e devolve pro FIM da fila p/ retry com
 // outra session. Esgotou maxAttempts -> descarta (conta como done).
 export async function retryLease(batch, units, maxAttempts = 3) {
