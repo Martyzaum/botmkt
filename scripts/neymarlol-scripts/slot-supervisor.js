@@ -183,11 +183,19 @@ const beat = setInterval(() => {
 
 out(`\n===== START slot ${SLOT} @ ${ts()} | log=${LOGFILE} =====`);
 emit("SUP", `supervisor on | entry=${ENTRY} | inatividade=${Math.round(INACTIVITY_MS / 1000)}s`);
-// sem 'session' provisionada => o bot ficaria pedindo "Digite seu numero" no
-// stdin pra sempre. Falha RÁPIDO (slot vazio / pool seco) em vez de travar
-// INACTIVITY_MS inteiro. (SKIP_SESSION_CHECK=1 desliga, se o bot criar a session.)
-if (process.env.SKIP_SESSION_CHECK !== "1" && !fs.existsSync(path.join(process.cwd(), "session"))) {
+// PRÉ-CHECK antes de rodar o bot (evita crash/pendura de 45min):
+//  - sem 'session' => o bot ficaria pedindo "Digite seu numero" pra sempre.
+//  - sem DADOS\TELEFONES.txt => o bot crasha tentando abrir o arquivo de números
+//    e PENDURA (erro não-fatal) até o teto global. Acontece quando o slot ganhou
+//    session mas não recebeu telefone nesta onda (descompasso/sobra de estado).
+//  Em ambos: erra na HORA. A 'session' NÃO é tocada (fica pro próximo turno -
+//  session-keeping); o lote vai pra outro slot / volta pra fila sem penalizar.
+//  (SKIP_SESSION_CHECK=1 / SKIP_TEL_CHECK=1 desligam cada um.)
+const slotDir = process.cwd();
+if (process.env.SKIP_SESSION_CHECK !== "1" && !fs.existsSync(path.join(slotDir, "session"))) {
   finish("erro", 1, "sem session (slot vazio / pool seco)");
+} else if (process.env.SKIP_TEL_CHECK !== "1" && !fs.existsSync(path.join(slotDir, "DADOS", "TELEFONES.txt"))) {
+  finish("erro", 1, "sem TELEFONES.txt (session sem telefone nesta onda)");
 } else {
   start();
 }

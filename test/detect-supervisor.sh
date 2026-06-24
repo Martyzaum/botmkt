@@ -17,7 +17,7 @@ T="$(mktemp -d)"; DESK="$T/desk"; mkdir -p "$DESK"
 PASS=0; FAIL=0
 chk(){ [ "$2" = "$3" ] && { echo "  ✓ $1 ($2)"; PASS=$((PASS+1)); } || { echo "  ✗ $1: esperava '$3', veio '$2'"; FAIL=$((FAIL+1)); }; }
 
-mkslot(){ mkdir -p "$DESK/$1/session"; echo link > "$DESK/$1/session/session-link.txt"; printf '%s' "$2" > "$DESK/$1/main.js"; cp "$SUP" "$DESK/$1/index.js"; }
+mkslot(){ mkdir -p "$DESK/$1/session" "$DESK/$1/DADOS"; echo link > "$DESK/$1/session/session-link.txt"; echo 5511000000000 > "$DESK/$1/DADOS/TELEFONES.txt"; printf '%s' "$2" > "$DESK/$1/main.js"; cp "$SUP" "$DESK/$1/index.js"; }
 status(){ python3 -c "import json;print(json.load(open('$DESK/_logs/slot-$1.result.json'))['status'])" 2>/dev/null || echo "SEM_RESULT"; }
 run(){ ( cd "$DESK/$1" && DESKTOP_DIR="$DESK" SLOT_ID="$1" INACTIVITY_MS=2000 MAX_RESTARTS=2 node index.js >/dev/null 2>&1 ); }
 
@@ -52,6 +52,16 @@ case "$motivoF" in *caindo*) echo "  ✓ F: detectou pela queda, nao pelo timeou
 #    tem que dar SUCESSO. Antes do conserto, virava ERRO apos MAX_RESTARTS saidas.
 mkslot G 'const fs=require("node:fs");const f=(process.env.DESKTOP_DIR||".")+"/cnt-"+(process.env.SLOT_ID||"x");let c=0;try{c=(+fs.readFileSync(f,"utf8"))||0}catch{}c++;fs.writeFileSync(f,String(c));console.log("enviado lote "+c+" BYPASS APLICADO");if(c>=5)console.log("NENHUM NÚMERO RESTANTE.");process.exit(0);'
 run G; chk "G: sai code 0 5x (>MAX_RESTARTS) e termina -> sucesso" "$(status G)" "sucesso"
+
+# H) tem session mas SEM DADOS/TELEFONES.txt -> erro na hora (nao roda o bot que
+#    crasharia/penduraria). A session fica intacta pro proximo turno.
+mkdir -p "$DESK/H/session"; echo link > "$DESK/H/session/session-link.txt"
+printf 'console.log("NAO DEVERIA RODAR - sem telefone");' > "$DESK/H/main.js"; cp "$SUP" "$DESK/H/index.js"
+( cd "$DESK/H" && DESKTOP_DIR="$DESK" SLOT_ID="H" node index.js >/dev/null 2>&1 )
+chk "H: session sem TELEFONES.txt -> erro na hora" "$(status H)" "erro"
+motivoH="$(python3 -c "import json;print(json.load(open('$DESK/_logs/slot-H.result.json'))['motivo'])" 2>/dev/null)"
+case "$motivoH" in *TELEFONES*) echo "  ✓ H: motivo certo ($motivoH)"; PASS=$((PASS+1));; *) echo "  ✗ H: esperava 'sem TELEFONES.txt', veio: $motivoH"; FAIL=$((FAIL+1));; esac
+[ -e "$DESK/H/session" ] && { echo "  ✓ H: session preservada (próximo turno)"; PASS=$((PASS+1)); } || { echo "  ✗ H: session foi removida (não devia)"; FAIL=$((FAIL+1)); }
 
 rm -rf "$T"
 echo ""
