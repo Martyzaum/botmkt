@@ -152,7 +152,9 @@ export function inventoryByBatch(batch, tenant) {
   ).get(...a);
   const tel = db.prepare(
     `SELECT COUNT(*) total, COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='enviado'),0) enviado,
-            COALESCE(SUM(status='erro'),0) erro, COALESCE(SUM(attempts),0) tentativas
+            COALESCE(SUM(status='erro'),0) erro, COALESCE(SUM(attempts),0) tentativas,
+            COALESCE(SUM(CASE WHEN phone IS NULL OR phone='' THEN 0
+                         ELSE length(phone) - length(replace(phone, char(10), '')) + 1 END),0) numeros
      FROM telefones_inv ${cond}`
   ).get(...a);
   const sessPending = db.prepare(`SELECT subsession, telefone, link FROM sessions_inv ${cond} AND status='pending' ORDER BY subsession LIMIT 500`).all(...a);

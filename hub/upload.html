@@ -364,7 +364,7 @@
       <div class="card-h"><span class="step">≡</span><div><h2>Inventário</h2><p class="hint">o que foi subido: usado / erro / pending</p></div></div>
       <div class="inv-grid">
         <div class="inv-box"><div class="inv-h">Sessions <span class="muted" id="inv-s-tot"></span></div><div id="inv-sessions"></div></div>
-        <div class="inv-box"><div class="inv-h">Telefones <span class="muted" id="inv-t-tot"></span></div><div id="inv-telefones"></div></div>
+        <div class="inv-box"><div class="inv-h">Telefones <span class="muted" style="font-weight:500">(lotes)</span> <span class="muted" id="inv-t-tot"></span></div><div id="inv-telefones"></div></div>
       </div>
     </section>
     <section class="card">
@@ -697,7 +697,7 @@ function invPend(list, fmt){
 function renderInventory(inv){
   const s = inv.sessions || {}, t = inv.telefones || {};
   $('inv-s-tot').textContent = '· ' + (s.total || 0) + ' total';
-  $('inv-t-tot').textContent = '· ' + (t.total || 0) + ' total';
+  $('inv-t-tot').textContent = '· ' + (t.total || 0) + ' lotes · ' + (t.numeros || 0).toLocaleString('pt-BR') + ' números';
   $('inv-sessions').innerHTML = '<div class="inv-counts">'
     + invPill('pend', 'pending', s.pending || 0) + invPill('ok', 'usadas', s.usada || 0)
     + (s.sucesso ? invPill('ok', '✓ ' + s.sucesso) : '') + (s.travado ? invPill('warn', '⚠ ' + s.travado) : '') + (s.erro ? invPill('err', '✗ ' + s.erro) : '')
