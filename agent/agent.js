@@ -8,7 +8,7 @@
 //    DESKTOP_DIR (opcional — default: <home>\Desktop)
 // =====================================================================
 import { exec, spawnSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readdir, stat, open } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -18,7 +18,9 @@ const AGENT_ID = process.env.AGENT_ID || os.hostname();
 const TENANT_ID = process.env.TENANT_ID || 'default';
 const POLL_MS = Number(process.env.POLL_MS || 3000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 10000);
+const LOG_PUSH_MS = Number(process.env.LOG_PUSH_MS || 4000);
 const DESKTOP = process.env.DESKTOP_DIR || path.join(os.homedir(), 'Desktop');
+const LOGDIR = path.join(DESKTOP, '_logs');
 const MAX_BACKOFF = 30000;
 
 if (!HUB_URL || !TOKEN) { console.error('FALTA HUB_URL ou HUB_TOKEN no ambiente.'); process.exit(1); }
@@ -104,10 +106,53 @@ async function handle(job) {
   return runShell(job.command, job.shell, job.timeoutMs);
 }
 
+// ---- tail dos logs dos slots -> hub (painel acompanha ao vivo) ----------
+//  Lê só os BYTES novos de cada Desktop\_logs\slot-*.log (offset por arquivo,
+//  só linhas completas) e empurra pro /agent/logs. Reseta se o arquivo encolheu.
+const logOffsets = new Map();
+async function collectNewLines() {
+  let files = [];
+  try { files = (await readdir(LOGDIR)).filter((f) => /^slot-.*\.log$/i.test(f)); } catch { return []; }
+  const lines = [];
+  for (const f of files) {
+    const full = path.join(LOGDIR, f);
+    let st; try { st = await stat(full); } catch { continue; }
+    let off = logOffsets.get(full) || 0;
+    if (st.size < off) off = 0;          // arquivo truncado/rotacionado
+    if (st.size === off) continue;
+    let fh; try { fh = await open(full, 'r'); } catch { continue; }
+    try {
+      const len = st.size - off;
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, off);
+      const nl = buf.lastIndexOf(0x0a);  // só consome até a última quebra de linha
+      if (nl < 0) continue;              // ainda não tem linha completa
+      const consume = buf.subarray(0, nl + 1);
+      logOffsets.set(full, off + consume.length);
+      for (const l of consume.toString('utf8').split('\n')) if (l.trim()) lines.push(l);
+    } finally { await fh.close(); }
+  }
+  return lines;
+}
+async function pushLogs() {
+  try {
+    let lines = await collectNewLines();
+    if (!lines.length) return;
+    // ordena pelo timestamp ISO embutido ([2026-..Z]) e limita o tamanho do push
+    lines.sort((a, b) => { const x = a.slice(1, 25), y = b.slice(1, 25); return x < y ? -1 : x > y ? 1 : 0; });
+    if (lines.length > 500) lines = [`[... ${lines.length - 500} linha(s) omitida(s) ...]`, ...lines.slice(-500)];
+    await fetch(`${HUB_URL}/agent/logs`, {
+      method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ id: AGENT_ID, tenant: TENANT_ID, lines }),
+    });
+  } catch { /* silencioso: best-effort */ }
+}
+
 async function main() {
   console.log(`[agent ${AGENT_ID}] tenant=${TENANT_ID} -> ${HUB_URL} (desktop: ${DESKTOP})`);
   heartbeat();
   setInterval(heartbeat, HEARTBEAT_MS);
+  setInterval(pushLogs, LOG_PUSH_MS);   // empurra os logs dos slots pro painel
   let backoff = POLL_MS;
   for (;;) {
     try {

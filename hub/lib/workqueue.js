@@ -109,7 +109,10 @@ export async function commit(batch, keys) {
 
 export async function status(batch) {
   const q = await ensure(batch);
-  return { total: q.total, pending: q.pending.length, leased: q.leased.size, done: q.doneCount };
+  // retrying = pendentes que já falharam ao menos 1x (estão na fila p/ outra tentativa)
+  let retrying = 0;
+  for (const u of q.pending) if ((q.attempts.get(u.key) || 0) > 0) retrying++;
+  return { total: q.total, pending: q.pending.length, leased: q.leased.size, done: q.doneCount, retrying };
 }
 
 // força reconstrução a partir do storage (ex.: subiu mais arquivos no batch)

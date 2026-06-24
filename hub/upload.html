@@ -206,6 +206,10 @@
   .stat .l{font-size:12px;color:var(--muted);font-weight:600;margin-top:6px}
   .stat.ok .n{color:var(--ok)} .stat.warn .n{color:var(--warn)}
   .stat.err .n{color:var(--err)} .stat.info .n{color:var(--brand)}
+  .logbox{background:#0b1020;color:#cbd5e1;border:1px solid var(--border-strong);border-radius:10px;
+    padding:12px 14px;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;height:360px;overflow:auto;
+    white-space:pre-wrap;word-break:break-word;margin:0}
+  .logbox .ok{color:#34d399} .logbox .err{color:#f87171} .logbox .vps{color:#7dd3fc;font-weight:700}
   .tbl{width:100%;border-collapse:collapse;font-size:13px}
   .tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
     letter-spacing:.04em;padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -358,6 +362,7 @@
       <span class="muted" id="mon-status"></span>
     </div>
     <div class="muted" id="mon-run" style="margin:-6px 0 14px"></div>
+    <div class="stats" id="mon-queue" style="margin-bottom:10px"></div>
     <div class="stats" id="mon-stats"></div>
     <div class="muted" id="mon-sub" style="margin:-4px 0 16px"></div>
     <section class="card">
@@ -374,6 +379,10 @@
     <section class="card">
       <div class="card-h"><span class="step">!</span><div><h2>Números com problema</h2><p class="hint">erro/travado, com motivo</p></div></div>
       <div style="overflow:auto"><table class="tbl" id="mon-erros"></table></div>
+    </section>
+    <section class="card">
+      <div class="card-h"><span class="step">»</span><div><h2>Logs ao vivo</h2><p class="hint">o que cada slot das VPS está fazendo agora (atualiza junto)</p></div></div>
+      <pre class="logbox" id="mon-logs">(sem logs ainda — aparecem quando a campanha roda)</pre>
     </section>
   </div>
 
@@ -638,16 +647,51 @@ async function loadMonitor(){
   if(!batch){ $('mon-stats').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
   $('mon-status').textContent = 'atualizando…';
   try{
-    const [st, wv, er, inv] = await Promise.all([
+    const [st, wv, er, inv, q, lg] = await Promise.all([
       api('/stats?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/waves?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ waves: [] })),
       api('/erros?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ erros: [] })),
       api('/inventory?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
+      api('/queue?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
+      api('/logs?tail=300').then(r => r.json()).catch(() => ({ agents: [] })),
     ]);
-    renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv);
+    renderQueue(q); renderStats(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg);
     refreshCampaign(batch);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
+}
+// fila AO VIVO (pending/processando/retry/concluído) — atualiza a cada ciclo
+function renderQueue(q){
+  const box = $('mon-queue');
+  if(!q || q.total == null){ box.innerHTML = ''; return; }
+  const cards = [
+    { c:'info', n: q.pending ?? 0,  l:'pendente' },
+    { c:'warn', n: q.leased ?? 0,   l:'processando' },
+    { c:'',     n: q.retrying ?? 0, l:'retry' },
+    { c:'ok',   n: q.done ?? 0,     l:'concluído' },
+  ];
+  box.innerHTML = cards.map(c => '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div><div class="l">' + c.l + '</div></div>').join('');
+}
+// logs ao vivo de TODAS as VPS do tenant, mesclados por horário, com auto-scroll
+function renderLogs(data){
+  const box = $('mon-logs'); if(!box) return;
+  const ags = (data && data.agents) || [];
+  const rows = [];
+  for(const a of ags){
+    const tag = String(a.agent).split('-').pop();
+    for(const l of (a.lines || [])) rows.push({ t: String(l).slice(1, 25), tag, l: String(l) });
+  }
+  rows.sort((x, y) => x.t < y.t ? -1 : x.t > y.t ? 1 : 0);
+  if(!rows.length){ box.textContent = '(sem logs ainda — aparecem quando a campanha roda)'; return; }
+  const html = rows.slice(-300).map(r => {
+    let cls = ''; const u = r.l.toUpperCase();
+    if(u.includes('TERMINADO') || u.includes('NENHUM N') || u.includes('SUCESSO')) cls = 'ok';
+    else if(u.includes('FECHADA') || u.includes('RECONECTANDO') || u.includes('ERRO') || u.includes('TRAVAD')) cls = 'err';
+    return '<span class="vps">' + esc(r.tag) + '</span> ' + (cls ? '<span class="' + cls + '">' + esc(r.l) + '</span>' : esc(r.l));
+  }).join('\n');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = html;
+  if(atBottom) box.scrollTop = box.scrollHeight;
 }
 function renderStats(s){
   const cards = [

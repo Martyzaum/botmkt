@@ -30,8 +30,18 @@ const agents = new Map();  // id -> { id, lastSeen, ip, info }
 const jobs = new Map();    // jobId -> job (status/result + _receipt p/ ack)
 const pending = new Map(); // jobId -> resolve()
 const runs = new Map();    // runId -> run
+const agentLogs = new Map(); // agent -> { tenant, lines: [] }  (logs ao vivo dos slots)
+const LOG_CAP = Number(process.env.LOG_CAP || 800);
 
 const now = () => new Date().toISOString();
+// guarda as linhas novas de um agente (ring buffer) p/ o painel acompanhar ao vivo.
+function pushAgentLines(agent, tenant, lines) {
+  let rec = agentLogs.get(agent);
+  if (!rec) { rec = { tenant: tenant || 'default', lines: [] }; agentLogs.set(agent, rec); }
+  if (tenant) rec.tenant = tenant;
+  for (const l of lines) if (l != null) rec.lines.push(String(l));
+  if (rec.lines.length > LOG_CAP) rec.lines.splice(0, rec.lines.length - LOG_CAP);
+}
 const knownAgents = () => [...new Set([...agents.keys(), ...queue.knownAgents()])];
 // agentes de um tenant (registrados via poll/heartbeat). tenant null = todos.
 const agentsOf = (tenant) =>
@@ -307,6 +317,14 @@ const server = http.createServer(async (req, res) => {
     touchAgent(b.id, clientIp(req), { status: b.status || 'idle', job: b.job || null, ...(b.tenant ? { tenant: b.tenant } : {}) });
     return send(res, 200, { ok: true });
   }
+  // o agente empurra as linhas novas dos _logs/slot-*.log p/ o painel acompanhar ao vivo
+  if (p === '/agent/logs' && req.method === 'POST') {
+    const b = await readBody(req);
+    if (!b.id) return send(res, 400, { error: 'id obrigatório' });
+    touchAgent(b.id, clientIp(req), b.tenant ? { tenant: b.tenant } : {});
+    if (Array.isArray(b.lines) && b.lines.length) pushAgentLines(b.id, b.tenant, b.lines);
+    return send(res, 200, { ok: true });
+  }
   if (p === '/agent/result' && req.method === 'POST') {
     const b = await readBody(req);
     const job = jobs.get(b.jobId);
@@ -466,6 +484,28 @@ const server = http.createServer(async (req, res) => {
     const batch = url.searchParams.get('batch');
     if (!batch) return send(res, 400, { error: 'batch obrigatório' });
     return send(res, 200, { waves: db.recentWaves(batch) });
+  }
+  // contadores AO VIVO da fila: pending / leased(processando) / retrying / done
+  if (p === '/queue' && req.method === 'GET') {
+    const batch = url.searchParams.get('batch');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    // sessão só vê batch do próprio tenant (convenção <tenant>-...)
+    if (A.kind === 'session' && batch !== A.tenant && !batch.startsWith(A.tenant + '-')) return send(res, 403, { error: 'batch de outro tenant' });
+    try { return send(res, 200, await workqueue.status(batch)); }
+    catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  // logs ao vivo dos slots, por VPS do tenant (o agente empurra via /agent/logs)
+  if (p === '/logs' && req.method === 'GET') {
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
+    const wantAgent = url.searchParams.get('agent');
+    const tail = Math.min(Math.max(Number(url.searchParams.get('tail') || 300), 1), LOG_CAP);
+    const out = [];
+    for (const [agent, rec] of agentLogs) {
+      if (tenant && tenant !== 'all' && (rec.tenant || 'default') !== tenant) continue;
+      if (wantAgent && agent !== wantAgent) continue;
+      out.push({ agent, online: agents.has(agent) && isOnline(agents.get(agent)), lines: rec.lines.slice(-tail) });
+    }
+    return send(res, 200, { agents: out });
   }
 
   // --- playbooks ---
