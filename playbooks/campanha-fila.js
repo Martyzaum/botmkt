@@ -5,8 +5,9 @@
 //  tenant em paralelo: cada VPS faz lease(16) -> roda a onda -> commit,
 //  em loop, até a fila secar. Balanceia sozinho.
 //
-//  SETUP (1x por VPS): manda o zip de sessions daquela VPS pro pool
-//  (Desktop\sessions). Cada zip vem de um upload separado por agente.
+//  SETUP: o pool de sessions é COMPARTILHADO (<batch>/sessions) e espalhado
+//  entre as VPS ativas (1 distribute, round-robin por subpasta <numero>-<n>).
+//  Cada session carrega o session-link.txt (gravado no upload).
 //
 //  Ciclo de uma onda (por VPS) — sessions E telefones rodam TODA onda:
 //    sync 16 pares de telefone
@@ -16,6 +17,7 @@
 //    -> movimenta-telefones
 //    -> movimenta-sessions  (se o pool secou, devolve os telefones à fila e para)
 //    -> renomear-sessions -> renomear-telefones
+//    -> gera-texto  (TEXTO.txt de cada slot = link da session + texto base)
 //    -> start-all
 //    -> commit (sucessos saem; erros voltam p/ retry → re-sync no próximo lease)
 //    -> grava no banco
@@ -63,16 +65,18 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
     : (args.tenant ? tenantAgents(args.tenant) : agents());
   if (!ags.length) throw new Error(`nenhum agente disponível${args.tenant ? ` para o tenant '${args.tenant}'` : ''}`);
 
-  // SETUP (1x por VPS): sessions pro pool + conteúdo (texto+video) nos DADOS
+  // SETUP: sessions do pool COMPARTILHADO espalhadas entre as VPS ativas +
+  // conteúdo global (texto base + vídeo) no CONTEUDO de cada VPS.
   if (!args.skipSetup) {
-    log('=== SETUP: sessions + conteúdo (1x por VPS) ===');
+    log('=== SETUP: sessions (espalha entre VPS) + conteúdo ===');
+    // 1 distribute: as subpastas <numero>-<n> vão round-robin pras VPS ativas
+    try {
+      const ds = await distribute(batch, 'sessions', { agents: ags });
+      for (const r of ds.results) log(`   sessions ${r.agent}: ${r.stdout}`);
+    } catch (e) { log(`   sem sessions distribuídas (${e.message})`); }
+    // conteúdo (texto base + vídeo) -> CONTEUDO; setup-conteudo espalha o VÍDEO
+    // (o TEXTO.txt por slot é gerado por onda pelo gera-texto.js).
     await Promise.all(ags.map(async (agent) => {
-      // sessions -> Desktop\sessions (pool)
-      try {
-        const ds = await distribute(`${batch}__${agent}`, 'sessions', { agents: [agent] });
-        for (const r of ds.results) log(`   ${agent}: sessions ${r.stdout}`);
-      } catch (e) { log(`   ${agent}: sem sessions enviadas (${e.message})`); }
-      // conteúdo -> Desktop\CONTEUDO -> espalha nos 16 DADOS
       const sc = await syncConteudo(agent, batch);
       if (sc.skipped) { log(`   ${agent}: sem conteúdo (texto/vídeo) enviado`); return; }
       const r = await run(agent, node('setup-conteudo.js'));
@@ -122,9 +126,11 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
         break;
       }
 
-      // 5) renomeia sessions e telefones (deixa TELEFONES.txt + session prontos)
+      // 5) renomeia sessions e telefones; gera o TEXTO.txt de cada slot com o
+      //    link da session que caiu nele (session-link.txt) + o texto base.
       await run(agent, node('renomear-sessions.js'));
       await run(agent, node('renomear-numeros.js'));
+      await run(agent, node('gera-texto.js'));
 
       // 6) roda a onda
       acc.ondas = wave;

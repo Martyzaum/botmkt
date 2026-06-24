@@ -141,8 +141,9 @@ async function distributeKind(batch, kind, targetAgents, log, limitsOverride) {
   //  telefones: unidade = NÚMERO (par TELEFONES-<n>.txt + " - Copia"), pra não quebrar o par
   const unitFiles = new Map(); // unit -> [{rel}]
   if (kind === 'sessions') {
-    for (const s of await store.listUnits(batch, 'sessions')) {
-      unitFiles.set(s, (await store.listSessionFiles(batch, s)).map((rel) => ({ rel })));
+    // unidade = subpasta <telefone>/<numero>-<n> (espalha as sessions entre as VPS)
+    for (const u of await store.listSessionUnits(batch)) {
+      unitFiles.set(u, (await store.listSessionFiles(batch, u)).map((rel) => ({ rel })));
     }
   } else {
     const pat = /^TELEFONES-(\d+)(?: - Copia)?\.txt$/i;
@@ -224,22 +225,17 @@ async function runPlaybook(name, args) {
         { type: 'sync', kind: 'telefones', destFolder: 'TELEFONES CAMPANHA', batch: safeRel(batch), files: units.flatMap((u) => u.files) },
         { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
       ),
-    // conteúdo -> Desktop\CONTEUDO da VPS (setup-conteudo espalha nos DADOS).
-    //  TEXTO.txt é POR-VPS (<batch>__<agent>/conteudo); VIDEO é global (<batch>/conteudo).
-    //  Retrocompat: se não houver TEXTO por-VPS, usa o TEXTO global (fluxo antigo).
+    // conteúdo global (TEXTO-BASE.txt + VIDEO) -> Desktop\CONTEUDO da VPS.
+    //  O TEXTO.txt de cada slot é gerado por onda pelo gera-texto.js (link da
+    //  session + TEXTO-BASE.txt); o setup-conteudo só espalha o VIDEO.
     syncConteudo: async (agent, batch, opts = {}) => {
-      const tmo = opts.timeoutMs || 10 * 60 * 1000;
-      const pvBatch = `${safeRel(batch)}__${safeRel(agent)}`;
-      const pv = await store.listFiles(pvBatch, 'conteudo');                 // por-VPS (TEXTO.txt do VPS)
-      const hasPvTexto = pv.some((r) => r.toUpperCase() === 'TEXTO.TXT');
-      const gl = (await store.listFiles(batch, 'conteudo'))                  // global (VIDEO; TEXTO legado)
-        .filter((r) => !(hasPvTexto && r.toUpperCase() === 'TEXTO.TXT'));
-      const jobs = [];
-      if (pv.length) jobs.push(enqueueAndWait(agent, { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: pvBatch, files: pv.map((rel) => ({ rel })) }, { timeoutMs: tmo }));
-      if (gl.length) jobs.push(enqueueAndWait(agent, { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files: gl.map((rel) => ({ rel })) }, { timeoutMs: tmo }));
-      if (!jobs.length) return { skipped: true, stdout: '(sem conteudo)', code: 0 };
-      const rs = await Promise.all(jobs);
-      return { code: rs.some((r) => r.code) ? 1 : 0, stdout: rs.map((r) => r.stdout).join(' | '), stderr: rs.map((r) => r.stderr).filter(Boolean).join('; ') };
+      const files = (await store.listFiles(batch, 'conteudo')).map((rel) => ({ rel }));
+      if (!files.length) return { skipped: true, stdout: '(sem conteudo)', code: 0 };
+      return enqueueAndWait(
+        agent,
+        { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files },
+        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
+      );
     },
   };
   (async () => {
@@ -336,12 +332,12 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/upload-zip' && req.method === 'POST') {
-    const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind'), agent = url.searchParams.get('agent');
+    const batch = url.searchParams.get('batch'), kind = url.searchParams.get('kind'), agent = url.searchParams.get('agent'), link = url.searchParams.get('link');
     if (!batch || !['sessions', 'telefones'].includes(kind)) return send(res, 400, { error: 'batch e kind(sessions|telefones) obrigatórios' });
-    if (kind === 'sessions' && !agent) return send(res, 400, { error: 'sessions exige agent (1 zip por VPS)' });
     try {
-      // sessions são por VPS: guarda num batch derivado <batch>__<agent> p/ sincronizar só àquela VPS.
-      const storageBatch = kind === 'sessions' ? `${safeRel(batch)}__${safeRel(agent)}` : batch;
+      // sessions: sem agent = pool COMPARTILHADO (<batch>/sessions, espalhado depois
+      // entre as VPS). Com agent = legado por-VPS (<batch>__<agent>).
+      const storageBatch = (kind === 'sessions' && agent) ? `${safeRel(batch)}__${safeRel(agent)}` : batch;
       const entries = unzip(await readRaw(req));
       // telefones: o movimenta-numeros (na VPS) só move o número se houver o PAR
       // (TELEFONES-<n>.txt + "TELEFONES-<n> - Copia.txt"). Se o zip veio só com os
@@ -361,10 +357,27 @@ const server = http.createServer(async (req, res) => {
         }
         entries.push(...extra);
       }
+      // sessions + link: grava session-link.txt DENTRO de cada subpasta <telefone>/<numero>-<n>
+      // (o link viaja junto da session no movimenta/renomeia → vira <slot>\session\session-link.txt).
+      let links = 0;
+      if (kind === 'sessions' && link) {
+        const norm = (s) => String(s).replaceAll('\\', '/');
+        const have = new Set(entries.map((e) => norm(e.name)));
+        const data = Buffer.from(String(link).trim(), 'utf8'), seen = new Set();
+        for (const e of entries) {
+          const parts = norm(e.name).split('/');
+          if (parts.length < 2 || !/^\d+-\d+$/.test(parts[1])) continue;
+          const unit = `${parts[0]}/${parts[1]}`;
+          if (seen.has(unit)) continue;
+          seen.add(unit);
+          const lname = `${unit}/session-link.txt`;
+          if (!have.has(lname)) { entries.push({ name: lname, data }); links++; }
+        }
+      }
       let n = 0;
       for (const e of entries) { await store.put(storageBatch, kind, e.name, e.data); n++; }
       if (kind === 'telefones') { try { await workqueue.reset(batch); } catch { /* fila recria no play */ } }
-      return send(res, 200, { ok: true, kind, agent: agent || null, files: n, copias });
+      return send(res, 200, { ok: true, kind, agent: agent || null, files: n, copias, links });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {

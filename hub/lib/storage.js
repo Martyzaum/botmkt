@@ -60,6 +60,20 @@ const local = {
     for (const e of ents) if (e.isDirectory()) set.add(e.name.split('__')[0]);
     return [...set];
   },
+  // unidades distribuíveis de session = subpasta <telefone>/<numero>-<n>
+  async listSessionUnits(batch) {
+    const base = path.join(STORAGE_DIR, safeRel(batch), 'sessions');
+    let tels = [];
+    try { tels = await readdir(base, { withFileTypes: true }); } catch { return []; }
+    const out = [];
+    for (const t of tels) {
+      if (!t.isDirectory()) continue;
+      let subs = [];
+      try { subs = await readdir(path.join(base, t.name), { withFileTypes: true }); } catch { continue; }
+      for (const s of subs) if (s.isDirectory() && /^\d+-\d+$/.test(s.name)) out.push(`${t.name}/${s.name}`);
+    }
+    return out;
+  },
 };
 
 // ---- S3 -----------------------------------------------------------------
@@ -128,6 +142,30 @@ function makeS3() {
         token = r.IsTruncated ? r.NextContinuationToken : undefined;
       } while (token);
       return [...set];
+    },
+    async listSessionUnits(batch) {
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+      const root = `${safeRel(batch)}/sessions/`;
+      const tels = [];
+      let token;
+      do {
+        const r = await (await lazy()).send(new ListObjectsV2Command({ Bucket: AWS_CONFIG.s3Bucket, Prefix: root, Delimiter: '/', ContinuationToken: token }));
+        for (const p of r.CommonPrefixes || []) tels.push(p.Prefix);
+        token = r.IsTruncated ? r.NextContinuationToken : undefined;
+      } while (token);
+      const out = [];
+      for (const tel of tels) {
+        let t2;
+        do {
+          const r = await (await lazy()).send(new ListObjectsV2Command({ Bucket: AWS_CONFIG.s3Bucket, Prefix: tel, Delimiter: '/', ContinuationToken: t2 }));
+          for (const p of r.CommonPrefixes || []) {
+            const unit = p.Prefix.slice(root.length).replace(/\/$/, '');
+            if (/^\d+-\d+$/.test(unit.split('/')[1] || '')) out.push(unit);
+          }
+          t2 = r.IsTruncated ? r.NextContinuationToken : undefined;
+        } while (t2);
+      }
+      return out;
     },
   };
 }
