@@ -21,6 +21,8 @@
 //  >>> Fonte unica. Deploy para os slots com deploy-index.js <<<
 // =====================================================================
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const SLOT = process.env.SLOT_ID || path.basename(process.cwd());
@@ -28,6 +30,22 @@ const ENTRY = process.env.BOT_ENTRY || "main.js";
 const INACTIVITY_MS = Number(process.env.INACTIVITY_MS || 4 * 60 * 1000);
 const MAX_RESTARTS = Number(process.env.MAX_RESTARTS || 3);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 30 * 1000);
+
+// ---- log em arquivo (visibilidade) ----------------------------------
+//  Cada slot grava TUDO em Desktop\_logs\slot-<N>.log e o veredito final
+//  em slot-<N>.result.json. Assim da pra acompanhar ao vivo (ver-logs.ps1)
+//  e inspecionar depois, MESMO rodando escondido pelo agente.
+const DESKTOP = process.env.DESKTOP_DIR || path.join(os.homedir(), "Desktop");
+const LOGDIR = path.join(DESKTOP, "_logs");
+try { fs.mkdirSync(LOGDIR, { recursive: true }); } catch {}
+const LOGFILE = path.join(LOGDIR, `slot-${SLOT}.log`);
+const RESULTFILE = path.join(LOGDIR, `slot-${SLOT}.result.json`);
+// escrita SINCRONA (fd) — sobrevive ao process.exit() sem perder o final do log.
+let logFd = null;
+try { logFd = fs.openSync(LOGFILE, "a"); } catch {}
+const writeLog = (s) => { try { if (logFd !== null) fs.writeSync(logFd, s + "\n"); } catch {} };
+const out = (line) => { console.log(line); writeLog(line); };
+try { fs.rmSync(RESULTFILE, { force: true }); } catch {} // limpa veredito velho
 
 // Os 2 logs que significam "onda terminou com sucesso".
 const SUCESSO = ["ENVIO DA BROADCAST TERMINADO", "NENHUM NÚMERO RESTANTE."];
@@ -42,7 +60,7 @@ const isSucesso = (line) => {
 };
 
 const ts = () => new Date().toISOString();
-const emit = (tag, msg) => console.log(`[${ts()}][slot ${SLOT}][${tag}] ${msg}`);
+const emit = (tag, msg) => out(`[${ts()}][slot ${SLOT}][${tag}] ${msg}`);
 
 // morto de fora: mata o main.js (arvore) ANTES de sair, sem deixar orfao.
 function onSignal(sig) {
@@ -72,11 +90,11 @@ function finish(status, code, motivo) {
   clearInterval(watch);
   clearInterval(beat);
   emit("STATUS", `${status}${motivo ? " | " + motivo : ""}`);
+  const result = { slot: SLOT, status, motivo: motivo || null, restarts };
   // linha final estavel pro orquestrador:
-  console.log(
-    "SLOT_RESULT " +
-      JSON.stringify({ slot: SLOT, status, motivo: motivo || null, restarts })
-  );
+  out("SLOT_RESULT " + JSON.stringify(result));
+  // veredito tambem em arquivo (start-all/agente consegue ler sem capturar stdout)
+  try { fs.writeFileSync(RESULTFILE, JSON.stringify({ ...result, ts: ts() })); } catch {}
   killChild();
   process.exit(code);
 }
@@ -84,7 +102,7 @@ function finish(status, code, motivo) {
 function handleLine(line) {
   if (!line.trim()) return;
   lastActivity = Date.now();
-  console.log(`[${ts()}][slot ${SLOT}] ${line}`); // relay carimbado
+  out(`[${ts()}][slot ${SLOT}] ${line}`); // relay carimbado
   if (!done && isSucesso(line)) finish("sucesso", 0, line.trim());
 }
 
@@ -146,5 +164,6 @@ const beat = setInterval(() => {
     emit("HB", `vivo, ultimo log do bot ha ${Math.round((Date.now() - lastActivity) / 1000)}s`);
 }, HEARTBEAT_MS);
 
+out(`\n===== START slot ${SLOT} @ ${ts()} | log=${LOGFILE} =====`);
 emit("SUP", `supervisor on | entry=${ENTRY} | inatividade=${Math.round(INACTIVITY_MS / 1000)}s`);
 start();

@@ -84,7 +84,11 @@ function launch(i) {
     return;
   }
 
-  const child = spawn("node", [ENTRY], { cwd, windowsHide: true });
+  const child = spawn("node", [ENTRY], {
+    cwd,
+    windowsHide: true,
+    env: { ...process.env, DESKTOP_DIR: desktop, SLOT_ID: String(i) },
+  });
   s.child = child;
   let acc = "";
   const onData = (d) => {
