@@ -357,6 +357,7 @@
     <div class="mon-bar">
       <select id="mon-batch" title="batch a acompanhar"></select>
       <button id="mon-start" class="btn btn-primary" style="width:auto" type="button">▶ Iniciar campanha</button>
+      <button id="mon-stop" class="btn btn-secondary" style="width:auto;display:none" type="button">⏸ Pausar</button>
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
@@ -812,15 +813,17 @@ async function refreshCampaign(batch){
       .filter(x => x.playbook === 'campanha-fila' && x.args && x.args.batch === batch)
       .sort((a, b) => a.startedAt < b.startedAt ? 1 : -1)[0] || null; }
   }catch(e){}
-  const btn = $('mon-start'), info = $('mon-run');
-  if(!run){ btn.disabled = false; btn.textContent = '▶ Iniciar campanha'; info.textContent = ''; return; }
+  const btn = $('mon-start'), info = $('mon-run'), stop = $('mon-stop');
+  if(!run){ btn.disabled = false; btn.textContent = '▶ Iniciar campanha'; info.textContent = ''; stop.style.display = 'none'; return; }
   let last = '';
   try{ const rr = await api('/run/' + run.id); if(rr.ok){ const L = (await rr.json()).log || []; last = L.length ? L[L.length - 1].msg : ''; } }catch(e){}
   if(run.status === 'running'){
     btn.disabled = true; btn.textContent = '■ rodando…';
+    stop.style.display = ''; stop.disabled = false;
     info.innerHTML = '<span class="badge warn">rodando</span> ' + esc(last);
   } else {
     btn.disabled = false; btn.textContent = '▶ Iniciar campanha';
+    stop.style.display = 'none';
     const cls = run.status === 'error' ? 'err' : 'ok';
     info.innerHTML = '<span class="badge ' + cls + '">' + esc(run.status === 'done' ? 'concluída' : run.status) + '</span> ' + esc(run.error || last);
   }
@@ -837,6 +840,18 @@ $('mon-start').onclick = async () => {
     else if(r.status === 409){ $('mon-run').innerHTML = '<span class="badge warn">já rodando</span> nesse batch'; loadMonitor(); }
     else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-start').disabled = false; }
   }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-start').disabled = false; }
+};
+$('mon-stop').onclick = async () => {
+  const batch = $('mon-batch').value;
+  if(!batch) return;
+  if(!confirm('Pausar a campanha do batch ' + batch + '?\n\nA onda atual termina e ela para. A fila é preservada — dá pra retomar depois com Iniciar.')) return;
+  $('mon-stop').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">pausando…</span>';
+  try{
+    const r = await api('/campaign/stop', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
+    const j = await r.json().catch(() => ({}));
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">pausando…</span> termina a onda atual e para (' + (j.parando || 0) + ' run) — fila preservada'; loadMonitor(); }
+    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-stop').disabled = false; }
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-stop').disabled = false; }
 };
 
 // ── bootstrap: decide login vs painel ─────────────────

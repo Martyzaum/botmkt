@@ -216,12 +216,13 @@ async function loadPlaybook(name) {
 }
 async function runPlaybook(name, args) {
   const mod = await loadPlaybook(name);
-  const run = { id: crypto.randomUUID(), playbook: name, args: args || {}, status: 'running', log: [], startedAt: now(), finishedAt: null, error: null, result: null };
+  const run = { id: crypto.randomUUID(), playbook: name, args: args || {}, status: 'running', log: [], startedAt: now(), finishedAt: null, error: null, result: null, aborted: false };
   runs.set(run.id, run);
   const log = (msg) => { const line = { t: now(), msg: String(msg) }; run.log.push(line); console.log(`[run ${run.id.slice(0, 8)}] ${line.msg}`); };
   const ctx = {
     args: args || {},
     log,
+    isAborted: () => run.aborted,   // o playbook checa isto p/ pausar entre ondas
     run: (agent, command, opts) => runOnAgent(agent, command, opts),
     runAll: (command, opts) => Promise.all(knownAgents().map((a) => runOnAgent(a, command, opts))),
     distribute: (batch, kind, opts = {}) => distributeKind(batch, kind, opts.agents || [], log, opts.limits),
@@ -570,6 +571,20 @@ const server = http.createServer(async (req, res) => {
     if (running) return send(res, 409, { error: 'já há uma campanha rodando nesse batch', runId: running.id });
     try { const run = await runPlaybook('campanha-fila', { batch, tenant }); return send(res, 200, { runId: run.id, status: run.status }); }
     catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  // pausar campanha pelo painel: sinaliza o(s) run(s) desse batch p/ parar entre
+  // ondas (a onda atual fecha, dá commit, e o loop encerra; a fila fica intacta).
+  if (p === '/campaign/stop' && req.method === 'POST') {
+    const b = await readBody(req);
+    const batch = b.batch;
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (b.tenant || 'default');
+    const alvos = [...runs.values()].filter((r) =>
+      r.status === 'running' && r.playbook === 'campanha-fila' &&
+      r.args?.batch === batch && (r.args?.tenant || 'default') === tenant &&
+      (A.kind === 'token' || (r.args?.tenant || 'default') === A.tenant)); // sessão só para o próprio tenant
+    for (const r of alvos) r.aborted = true;
+    return send(res, 200, { ok: true, parando: alvos.length });
   }
   if (p.startsWith('/run/') && req.method === 'GET') {
     const run = runs.get(p.slice('/run/'.length));

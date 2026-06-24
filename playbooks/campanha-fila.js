@@ -71,7 +71,7 @@ const parseSlotNumeros = (stdout) => {
 
 export const meta = { name: 'campanha-fila', description: 'Loop pull em ondas (sessions+telefones) por tenant' };
 
-export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args }) {
+export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args, isAborted }) {
   const batch = args.batch;
   if (!batch) throw new Error('passe o batch: play campanha-fila \'{"batch":"..."}\'');
   const WAVE = Number(args.wave || 16);
@@ -110,7 +110,7 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   // abre/fecha os terminais de log da VPS automaticamente (default ON; windows:false desliga)
   const wantWindows = args.windows !== false;
   const loopAgente = async (agent) => {
-    const acc = { agent, ondas: 0, enviados: 0, retry: 0, descartados: 0, semResumo: 0, poolSeco: false, desistiu: false };
+    const acc = { agent, ondas: 0, enviados: 0, retry: 0, descartados: 0, semResumo: 0, poolSeco: false, desistiu: false, pausado: false };
     // slots que falharam na onda ANTERIOR -> só esses trocam de session na próxima.
     // null = primeira onda (limpa todas as sessions pra começar do zero).
     let failedSlots = null;
@@ -120,6 +120,10 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
     for (;;) {
       const wave = acc.ondas + 1;
       const tag = `[${agent} onda ${wave}]`;
+
+      // PAUSA pelo painel: encerra entre ondas (a onda anterior já fechou e deu
+      // commit; a fila fica intacta -> dá pra retomar depois com Iniciar).
+      if (isAborted && isAborted()) { acc.pausado = true; log(`${tag} ⏸ pausado pelo painel — encerrando (fila preservada)`); break; }
 
       // A) SESSIONS PRIMEIRO — definem quais slots rodam nesta onda.
       //    broadcast sempre zerado; limpa a session SÓ dos slots que falharam na
@@ -235,7 +239,7 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
       // fecha as janelas de log da VPS no fim (mesmo se algo deu erro no meio)
       if (wantWindows) { try { await run(agent, ps('fecha-logs.ps1')); } catch { /* best-effort */ } }
     }
-    log(`[${agent}] fim: ${acc.ondas} onda(s) | enviados=${acc.enviados} retry=${acc.retry} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL SECO' : ''}${acc.desistiu ? ' | DESISTIU (sessions mortas)' : ''}`);
+    log(`[${agent}] fim: ${acc.ondas} onda(s) | enviados=${acc.enviados} retry=${acc.retry} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL SECO' : ''}${acc.desistiu ? ' | DESISTIU (sessions mortas)' : ''}${acc.pausado ? ' | PAUSADO' : ''}`);
     return acc;
   };
 
