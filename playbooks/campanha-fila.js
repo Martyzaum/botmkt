@@ -43,6 +43,7 @@
 
 const NEY = '$env:USERPROFILE\\Desktop\\neymarlol-scripts';
 const node = (f, env = '') => `${env ? env + ' ' : ''}node "${NEY}\\${f}"`;
+const ps = (file, arg = '') => `& '${NEY}\\${file}'${arg ? ' ' + arg : ''}`; // roda um .ps1
 const parseResumo = (stdout) => {
   const m = (stdout || '').match(/RESULTADO_JSON (\{.*\})/);
   if (!m) return null;
@@ -105,11 +106,15 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   log(`fila '${batch}'${args.tenant ? ` | tenant=${args.tenant}` : ''}: ${st0.pending} par(es) | ${ags.length} VPS (${ags.join(', ')}) | ondas de ${WAVE}`);
   if (!st0.pending) { log('fila vazia — nada a fazer'); return { batch, vazio: true }; }
 
+  // abre/fecha os terminais de log da VPS automaticamente (default ON; windows:false desliga)
+  const wantWindows = args.windows !== false;
   const loopAgente = async (agent) => {
     const acc = { agent, ondas: 0, enviados: 0, retry: 0, descartados: 0, semResumo: 0, poolSeco: false };
     // slots que falharam na onda ANTERIOR -> só esses trocam de session na próxima.
     // null = primeira onda (limpa todas as sessions pra começar do zero).
     let failedSlots = null;
+    if (wantWindows) { try { await run(agent, ps('ver-logs.ps1', `-Slots ${WAVE}`)); } catch { /* janelas são best-effort */ } }
+    try {
     for (;;) {
       const wave = acc.ondas + 1;
       const tag = `[${agent} onda ${wave}]`;
@@ -214,6 +219,10 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
         committed: okUnits.map((u) => u.key),
         exhausted: rr.exhausted,
       });
+    }
+    } finally {
+      // fecha as janelas de log da VPS no fim (mesmo se algo deu erro no meio)
+      if (wantWindows) { try { await run(agent, ps('fecha-logs.ps1')); } catch { /* best-effort */ } }
     }
     log(`[${agent}] fim: ${acc.ondas} onda(s) | enviados=${acc.enviados} retry=${acc.retry} descartados=${acc.descartados}${acc.poolSeco ? ' | POOL DE SESSIONS SECO' : ''}`);
     return acc;
