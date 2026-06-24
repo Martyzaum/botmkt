@@ -48,6 +48,11 @@ run F; chk "F: loop de reconexao -> travado" "$(status F)" "travado"
 motivoF="$(python3 -c "import json;print(json.load(open('$DESK/_logs/slot-F.result.json'))['motivo'])" 2>/dev/null)"
 case "$motivoF" in *caindo*) echo "  ✓ F: detectou pela queda, nao pelo timeout ($motivoF)"; PASS=$((PASS+1));; *) echo "  ✗ F: esperava motivo 'session caindo', veio: $motivoF"; FAIL=$((FAIL+1));; esac
 
+# G) o bot SAI code 0 a cada lote (por design) e so manda o marcador la no 5o ->
+#    tem que dar SUCESSO. Antes do conserto, virava ERRO apos MAX_RESTARTS saidas.
+mkslot G 'const fs=require("node:fs");const f=(process.env.DESKTOP_DIR||".")+"/cnt-"+(process.env.SLOT_ID||"x");let c=0;try{c=(+fs.readFileSync(f,"utf8"))||0}catch{}c++;fs.writeFileSync(f,String(c));console.log("enviado lote "+c+" BYPASS APLICADO");if(c>=5)console.log("NENHUM NÚMERO RESTANTE.");process.exit(0);'
+run G; chk "G: sai code 0 5x (>MAX_RESTARTS) e termina -> sucesso" "$(status G)" "sucesso"
+
 rm -rf "$T"
 echo ""
 echo "================= DETECT: $PASS ok / $FAIL falha(s) ================="

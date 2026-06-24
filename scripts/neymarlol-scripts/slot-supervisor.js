@@ -80,7 +80,7 @@ process.on("SIGTERM", () => onSignal("SIGTERM"));
 process.on("SIGINT", () => onSignal("SIGINT"));
 
 let lastActivity = Date.now();
-let restarts = 0;
+let restarts = 0;          // crashes SEGUIDOS (saida != 0); zera a cada saida limpa
 let done = false;
 let child = null;
 
@@ -121,7 +121,6 @@ function handleLine(line) {
 }
 
 function start() {
-  emit("SUP", `iniciando ${ENTRY} (restart ${restarts}/${MAX_RESTARTS})`);
   child = spawn("node", [ENTRY], { windowsHide: true });
   let acc = "";
   const onData = (d) => {
@@ -143,18 +142,22 @@ function start() {
     if (done) return;
     if (acc.trim()) handleLine(acc); // flush do que sobrou
     if (done) return; // o flush pode ter detectado sucesso
-    // main.js saiu sem sucesso -> crash. Tenta reiniciar ate o teto.
-    if (restarts < MAX_RESTARTS) {
-      restarts++;
-      emit(
-        "SUP",
-        `${ENTRY} saiu (code=${code} signal=${signal || "-"}) sem sucesso; reiniciando...`
-      );
-      lastActivity = Date.now();
-      setTimeout(start, 1000);
+    // O main.js SAI sozinho por design (manda um lote e sai; o index.js antigo
+    // o reiniciava em loop). O sucesso só vem pelo MARCADOR lá no fim (~20min).
+    // Então: saída LIMPA (code 0) = lote normal -> reinicia e zera o contador.
+    // Saída != 0 = crash; N crashes SEGUIDOS -> erro. O sucesso (marcador), a
+    // inatividade (mudo) e o teto global seguem como rede de segurança.
+    const progrediu = code === 0;
+    if (progrediu) {
+      restarts = 0;
+    } else if (++restarts >= MAX_RESTARTS) {
+      finish("erro", 1, `crashou ${restarts}x seguidas sem progresso (code=${code})`);
+      return;
     } else {
-      finish("erro", 1, `saiu sem sucesso apos ${restarts} restart(s) (code=${code})`);
+      emit("SUP", `crash (code=${code} sig=${signal || "-"}) sem progresso; restart ${restarts}/${MAX_RESTARTS}`);
     }
+    lastActivity = Date.now();
+    setTimeout(start, progrediu ? 150 : 1000);
   });
 }
 
