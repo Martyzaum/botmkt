@@ -790,7 +790,7 @@ function renderQueue(q, inv){
 function renderSlots(rows){
   const box = $('mon-slots'); if(!box) return;
   rows = rows || [];
-  if(!rows.length){ box.innerHTML = '<div class="muted" style="font-size:12px">sem slots reportando — o modo pipeline preenche aqui (no wave use "Ondas recentes")</div>'; return; }
+  if(!rows.length){ box.innerHTML = '<div class="muted" style="font-size:12px">sem slots reportando ainda — preenche quando a campanha (pipeline) começa a enviar</div>'; return; }
   rows.sort((a,b)=> String(a.agent).localeCompare(String(b.agent)) || ((a.slot||0)-(b.slot||0)));
   const now = Date.now();
   const c = { rodando:0, sucesso:0, erro:0 };
