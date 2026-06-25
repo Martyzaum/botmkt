@@ -165,6 +165,7 @@ async function worker(slot, idx) {
   let poolDrySince = 0;
   let idle = 0;
   while (!flag.stop) {
+   try {
     if (!haveSession) {
       const sub = claimSession(slot);
       if (!sub) {
@@ -197,6 +198,7 @@ async function worker(slot, idx) {
       log(`slot ${slot}: ✗ ${unit.key} (${res.status}) -> requeue + troca session`);
       discardSession(slot); haveSession = false; curSession = null;
     }
+   } catch (e) { log(`slot ${slot}: erro inesperado (${e.message}) — segue`); await sleep(2000); }
   }
 }
 
@@ -204,7 +206,8 @@ async function worker(slot, idx) {
 (async () => {
   log(`start | batch=${BATCH} agent=${AGENT} slots=${SLOTS} hub=${HUB}`);
   abortPoller();
-  await Promise.all(Array.from({ length: SLOTS }, (_, k) => worker(k + 1, k)));
+  try { await Promise.all(Array.from({ length: SLOTS }, (_, k) => worker(k + 1, k))); }
+  catch (e) { log(`runner: erro geral (${e.message})`); }
   flag.stop = true;
   log(`fim do runner (fila seca / pausa / pool seco)`);
   process.exit(0);
