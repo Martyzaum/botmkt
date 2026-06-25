@@ -97,6 +97,13 @@ function clearTelefones(slot) {
   const dados = path.join(slotDir(slot), "DADOS");
   for (const f of safeReaddir(dados)) if (/^TELEFONES.*\.txt$/i.test(f)) try { fs.rmSync(path.join(dados, f), { force: true }); } catch {}
 }
+// zera o BROADCAST.txt do slot (registro do bot do que já foi enviado). No wave o
+// limpar-broadcast.js fazia isso em TODOS os 16 slots a cada onda; no pipeline tem
+// que ser POR SLOT, antes de cada envio (senão o bot reusa o registro velho).
+function clearBroadcast(slot) {
+  const bc = path.join(slotDir(slot), "DADOS", "BROADCAST.txt");
+  try { if (fs.existsSync(bc)) fs.writeFileSync(bc, ""); } catch {}
+}
 const safeReaddir = (d) => { try { return fs.readdirSync(d); } catch { return []; } };
 
 // ---- monta o slot p/ 1 envio (telefone + TEXTO.txt) ---------------------
@@ -104,6 +111,7 @@ async function buildSlot(slot, unit) {
   const dados = path.join(slotDir(slot), "DADOS");
   fs.mkdirSync(dados, { recursive: true });
   clearTelefones(slot);
+  clearBroadcast(slot);   // reset do registro do bot (equivale ao limpar-broadcast, por slot)
   const rel = (unit.files && unit.files[0] && unit.files[0].rel) || null;
   if (!rel) throw new Error("unit sem arquivo");
   await fetchFile(rel, path.join(dados, "TELEFONES.txt"));   // bot lê TELEFONES.txt
