@@ -879,8 +879,8 @@ function renderInventory(inv){
   // engana no pipeline (session reusada perde o id) -> só mostra como aproximado.
   $('inv-sessions').innerHTML = '<div class="inv-counts">'
     + invPill('', (s.testadas || 0) + ' testadas') + invPill('ok', 'boas (enviaram)', s.boas || 0)
-    + invPill('warn', 'mortas (travaram)', s.mortas || 0)
-    + '</div>' + invPend(s.pendingList, x => esc(x.subsession), '~' + (s.pending || 0) + ' não testadas (aprox.)');
+    + invPill('warn', 'mortas (travaram)', s.mortas || 0) + invPill('pend', 'não testadas', s.naoTestadas || 0)
+    + '</div>' + invPend(s.pendingList, x => esc(x.subsession), 'ver ' + (s.naoTestadas || 0) + ' não testadas');
   $('inv-telefones').innerHTML = '<div class="inv-counts">'
     + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0)
     + invPill('', (t.tentativas || 0) + ' tentativas')

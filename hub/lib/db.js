@@ -174,17 +174,20 @@ export function inventoryByBatch(batch, tenant) {
             COALESCE(SUM(result='erro'),0) erro
      FROM sessions_inv ${cond}`
   ).get(...a);
-  // saúde REAL das sessions, derivada dos eventos (slot_results): no pipeline a
-  // session reusada perde o id, então sessions_inv.pending engana. Aqui conta
-  // sessions DISTINTAS que de fato rodaram + quantas chegaram a enviar (boas).
+  // saúde REAL das sessions, derivada dos eventos (slot_results). Conta só as
+  // sessions DESTE lote (session IN sessions_inv do batch) — senão entra leftover
+  // de campanhas antigas no pool da VPS e o total passa das subidas. Assim fecha:
+  // boas + mortas = testadas, e testadas + não-testadas = subidas.
   const sreal = db.prepare(
     `SELECT COUNT(DISTINCT session) testadas,
             COUNT(DISTINCT CASE WHEN status='sucesso' THEN session END) boas
-     FROM slot_results ${cond} AND session IS NOT NULL`
-  ).get(...a);
+     FROM slot_results ${cond} AND session IS NOT NULL
+       AND session IN (SELECT subsession FROM sessions_inv ${cond})`
+  ).get(...a, ...a);
   sess.testadas = sreal.testadas;
   sess.boas = sreal.boas;
   sess.mortas = Math.max(0, (sreal.testadas || 0) - (sreal.boas || 0));
+  sess.naoTestadas = Math.max(0, (sess.total || 0) - (sreal.testadas || 0));
   const tel = db.prepare(
     `SELECT COUNT(*) total, COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='enviado'),0) enviado,
             COALESCE(SUM(status='erro'),0) erro, COALESCE(SUM(attempts),0) tentativas,
