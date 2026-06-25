@@ -167,18 +167,31 @@ async function createJob(agent, spec) {
   await queue.send(agent, job);
   return job;
 }
-async function enqueueAndWait(agent, spec, { timeoutMs = 15 * 60 * 1000 } = {}) {
+async function enqueueAndWait(agent, spec, { timeoutMs = 15 * 60 * 1000, abortCheck } = {}) {
   const job = await createJob(agent, spec);
   return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => {
+      if (done) return; done = true;
+      clearTimeout(timer); if (ab) clearInterval(ab); pending.delete(job.id);
+      resolve(r);
+    };
     const timer = setTimeout(() => {
-      pending.delete(job.id); job.status = 'timeout'; job.finishedAt = now();
-      resolve({ agent, stdout: '', stderr: 'timeout esperando o agente', code: 124 });
+      job.status = 'timeout'; job.finishedAt = now();
+      finish({ agent, stdout: '', stderr: 'timeout esperando o agente', code: 124 });
     }, timeoutMs);
-    pending.set(job.id, (result) => { clearTimeout(timer); resolve({ agent, ...result }); });
+    // abortCheck: se o run foi parado/encerrado no painel, larga o job AGORA em vez
+    // de pendurar até o timeout (resolve run travado com agente morto, sem restart).
+    const ab = abortCheck
+      ? setInterval(() => {
+          if (abortCheck()) { job.status = 'aborted'; job.finishedAt = now(); finish({ agent, stdout: '', stderr: 'encerrado pelo painel', code: 137 }); }
+        }, 800)
+      : null;
+    pending.set(job.id, (result) => finish({ agent, ...result }));
   });
 }
 const runOnAgent = (agent, command, opts = {}) =>
-  enqueueAndWait(agent, { type: 'shell', command, shell: opts.shell || 'powershell', timeoutMs: opts.timeoutMs }, opts);
+  enqueueAndWait(agent, { type: 'shell', command, shell: opts.shell || 'powershell', timeoutMs: opts.timeoutMs, abortCheck: opts.abortCheck }, opts);
 
 // ---- distribuição round-robin com teto por VPS -------------------------
 async function distributeKind(batch, kind, targetAgents, log, limitsOverride, onlyUnits) {
@@ -263,8 +276,10 @@ async function runPlaybook(name, args) {
     args: args || {},
     log,
     isAborted: () => run.aborted,   // o playbook checa isto p/ pausar entre ondas
-    run: (agent, command, opts) => runOnAgent(agent, command, opts),
-    runAll: (command, opts) => Promise.all(knownAgents().map((a) => runOnAgent(a, command, opts))),
+    // todo job carrega o abortCheck do run -> parar/encerrar no painel larga os
+    // jobs em voo na hora (não espera o timeout de 45min com agente morto).
+    run: (agent, command, opts = {}) => runOnAgent(agent, command, { ...opts, abortCheck: () => run.aborted }),
+    runAll: (command, opts = {}) => Promise.all(knownAgents().map((a) => runOnAgent(a, command, { ...opts, abortCheck: () => run.aborted }))),
     distribute: (batch, kind, opts = {}) => distributeKind(batch, kind, opts.agents || [], log, opts.limits),
     agents: knownAgents,
     tenantAgents: agentsOf,
@@ -281,7 +296,7 @@ async function runPlaybook(name, args) {
       enqueueAndWait(
         agent,
         { type: 'sync', kind: 'telefones', destFolder: 'TELEFONES CAMPANHA', batch: safeRel(batch), files: units.flatMap((u) => u.files) },
-        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
+        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000, abortCheck: () => run.aborted }
       ),
     // conteúdo global (TEXTO-BASE.txt + VIDEO) -> Desktop\CONTEUDO da VPS.
     //  O TEXTO.txt de cada slot é gerado por onda pelo gera-texto.js (link da
@@ -292,7 +307,7 @@ async function runPlaybook(name, args) {
       return enqueueAndWait(
         agent,
         { type: 'sync', kind: 'conteudo', destFolder: 'CONTEUDO', batch: safeRel(batch), files },
-        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000 }
+        { timeoutMs: opts.timeoutMs || 10 * 60 * 1000, abortCheck: () => run.aborted }
       );
     },
   };

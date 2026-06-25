@@ -356,9 +356,10 @@
   <div id="monitor" hidden>
     <div class="mon-bar">
       <select id="mon-batch" title="batch a acompanhar"></select>
-      <button id="mon-start" class="btn btn-primary" style="width:auto" type="button">▶ Iniciar campanha</button>
-      <button id="mon-stop" class="btn btn-secondary" style="width:auto;display:none" type="button">⏸ Pausar</button>
-      <label class="muted" title="retomar SEM redistribuir as sessions (usa as que já estão nas VPS) — rápido"><input type="checkbox" id="mon-skip"> continuar (sem redistribuir)</label>
+      <button id="mon-start" class="btn btn-primary" style="width:auto" type="button" data-mode="fresh">▶ Iniciar campanha</button>
+      <button id="mon-fresh" class="btn btn-secondary" style="width:auto;display:none" type="button" title="recomeçar do zero — redistribui as sessions de novo (mais lento)">▶ do zero</button>
+      <button id="mon-stop" class="btn btn-secondary" style="width:auto;display:none" type="button" title="para na hora; dá pra Voltar (continuar) depois">⏸ Pausar</button>
+      <button id="mon-kill" class="btn btn-secondary" style="width:auto;display:none;border-color:#e15a5a;color:#ef9a9a" type="button" title="encerrar de vez — mata o run na hora, mesmo travado / sem agente">⏹ Encerrar</button>
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
@@ -673,7 +674,7 @@ async function loadMonitor(){
       api('/logs?tail=300').then(r => r.json()).catch(() => ({ agents: [] })),
     ]);
     renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg);
-    refreshCampaign(batch);
+    refreshCampaign(batch, q);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
 }
@@ -689,7 +690,8 @@ function renderProgress(inv){
     + '<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;height:12px;overflow:hidden">'
     + '<div style="width:' + pct + '%;height:100%;background:var(--ok);transition:width .3s"></div></div>';
 }
-// FUNIL dos telefones (soma = total): na fila + processando + enviados + descartados
+// FUNIL dos telefones: na fila + processando + enviados (sem descartados —
+// número não é mais descartado, fica em retry até uma session boa enviar)
 function renderQueue(q, inv){
   const box = $('mon-queue');
   const t = (inv && inv.telefones) || {};
@@ -698,7 +700,6 @@ function renderQueue(q, inv){
     { c:'info', n: q.pending ?? 0, l:'na fila',       sub: (q.retrying ? q.retrying + ' já tentadas' : 'esperando') },
     { c:'warn', n: q.leased ?? 0,  l:'processando',   sub: 'numa VPS agora' },
     { c:'ok',   n: t.enviado ?? 0, l:'enviados',      sub: 'concluídos' },
-    { c:'err',  n: t.erro ?? 0,    l:'descartados',   sub: 'falharam 3x' },
   ];
   box.innerHTML = cards.map(c =>
     '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div>'
@@ -777,7 +778,7 @@ function renderInventory(inv){
     + (s.travado ? invPill('warn', s.travado + ' travaram') : '') + (s.erro ? invPill('err', s.erro + ' erro') : '')
     + '</div>' + invPend(s.pendingList, x => esc(x.subsession));
   $('inv-telefones').innerHTML = '<div class="inv-counts">'
-    + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0) + invPill('err', 'erro', t.erro || 0)
+    + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0)
     + invPill('', (t.tentativas || 0) + ' tentativas')
     + '</div>' + invPend(t.pendingList, x => esc(x.unit) + ' · ' + esc(phoneSummary(x.phone)));
 }
@@ -837,8 +838,11 @@ $('imp-sess-btn').onclick = async () => {
   loadMonitor();
 };
 
-// ── iniciar campanha pelo painel ──────────────────────
-async function refreshCampaign(batch){
+// ── controle de campanha (botão muda com o estado) ────
+//  rodando        -> ⏸ Pausar  + ⏹ Encerrar
+//  parado/parcial -> ↻ Voltar (continuar, sem redistribuir)  + ▶ do zero
+//  novo/concluído -> ▶ Iniciar campanha
+async function refreshCampaign(batch, q){
   let run = null;
   try{
     const r = await api('/runs');
@@ -846,46 +850,80 @@ async function refreshCampaign(batch){
       .filter(x => x.playbook === 'campanha-fila' && x.args && x.args.batch === batch)
       .sort((a, b) => a.startedAt < b.startedAt ? 1 : -1)[0] || null; }
   }catch(e){}
-  const btn = $('mon-start'), info = $('mon-run'), stop = $('mon-stop');
-  if(!run){ btn.disabled = false; btn.textContent = '▶ Iniciar campanha'; info.textContent = ''; stop.style.display = 'none'; return; }
-  let last = '';
-  try{ const rr = await api('/run/' + run.id); if(rr.ok){ const L = (await rr.json()).log || []; last = L.length ? L[L.length - 1].msg : ''; } }catch(e){}
-  if(run.status === 'running'){
-    btn.disabled = true; btn.textContent = '■ rodando…';
-    stop.style.display = ''; stop.disabled = false;
-    info.innerHTML = '<span class="badge warn">rodando</span> ' + esc(last);
+  const start = $('mon-start'), fresh = $('mon-fresh'), stop = $('mon-stop'), kill = $('mon-kill'), info = $('mon-run');
+  const running = !!run && run.status === 'running';
+  const done = (q && q.done) || 0, pend = (q && q.pending) || 0, leased = (q && q.leased) || 0, falta = pend + leased;
+  const partial = !running && done > 0 && falta > 0; // já enviou algo e ainda sobra -> dá pra Voltar
+  start.style.display = running ? 'none' : '';
+  fresh.style.display = partial ? '' : 'none';
+  stop.style.display  = running ? '' : 'none';
+  kill.style.display  = running ? '' : 'none';
+  if(running){
+    stop.disabled = false; kill.disabled = false;
+  } else if(partial){
+    start.disabled = false; start.dataset.mode = 'resume';
+    start.textContent = '↻ Voltar (continuar)';
+    start.title = 'retoma de onde parou, SEM redistribuir (usa as sessions já nas VPS)';
   } else {
-    btn.disabled = false; btn.textContent = '▶ Iniciar campanha';
-    stop.style.display = 'none';
+    start.disabled = false; start.dataset.mode = 'fresh';
+    start.textContent = '▶ Iniciar campanha';
+    start.title = 'distribui as sessions e começa';
+  }
+  let last = '';
+  if(run){ try{ const rr = await api('/run/' + run.id); if(rr.ok){ const L = (await rr.json()).log || []; last = L.length ? L[L.length - 1].msg : ''; } }catch(e){} }
+  if(running){
+    info.innerHTML = '<span class="badge warn">rodando</span> ' + esc(last);
+  } else if(run){
     const cls = run.status === 'error' ? 'err' : 'ok';
-    info.innerHTML = '<span class="badge ' + cls + '">' + esc(run.status === 'done' ? 'concluída' : run.status) + '</span> ' + esc(run.error || last);
+    info.innerHTML = '<span class="badge ' + cls + '">' + esc(run.status === 'done' ? 'concluída' : run.status) + '</span> ' + esc(run.error || last)
+      + (partial ? ' · <span class="muted">faltam ' + falta + ' — Voltar p/ continuar</span>' : '');
+  } else if(partial){
+    info.innerHTML = '<span class="muted">faltam ' + falta + ' lotes — Voltar p/ continuar (ou ▶ do zero)</span>';
+  } else {
+    info.textContent = '';
   }
 }
-$('mon-start').onclick = async () => {
-  const batch = $('mon-batch').value;
-  if(!batch){ alert('selecione um batch'); return; }
-  if(!confirm('Iniciar a campanha do batch ' + batch + '?\n\nIsso vai DISPARAR os envios de verdade nas VPS ativas.')) return;
-  $('mon-start').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">iniciando…</span>';
+async function startCampaign(batch, skipSetup){
+  $('mon-start').disabled = true; $('mon-fresh').disabled = true;
+  $('mon-run').innerHTML = '<span class="badge warn">' + (skipSetup ? 'voltando…' : 'iniciando…') + '</span>';
   try{
-    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch, skipSetup: $('mon-skip').checked }) });
+    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch, skipSetup }) });
     const j = await r.json().catch(() => ({}));
-    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha iniciada'; loadMonitor(); }
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha ' + (skipSetup ? 'retomada' : 'iniciada'); loadMonitor(); }
     else if(r.status === 409){ $('mon-run').innerHTML = '<span class="badge warn">já rodando</span> nesse batch'; loadMonitor(); }
-    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-start').disabled = false; }
-  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-start').disabled = false; }
-};
-$('mon-stop').onclick = async () => {
-  const batch = $('mon-batch').value;
-  if(!batch) return;
-  if(!confirm('Pausar a campanha do batch ' + batch + '?\n\nA onda atual termina e ela para. A fila é preservada — dá pra retomar depois com Iniciar.')) return;
-  $('mon-stop').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">pausando…</span>';
+    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-start').disabled = false; $('mon-fresh').disabled = false; }
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-start').disabled = false; $('mon-fresh').disabled = false; }
+}
+async function stopCampaign(batch, hard){
+  const msg = hard
+    ? 'ENCERRAR de vez a campanha do batch ' + batch + '?\n\nMata o run na hora (mesmo travado / sem agente). A fila é preservada — depois dá pra Voltar ou começar do zero.'
+    : 'Pausar a campanha do batch ' + batch + '?\n\nPara na hora. A fila é preservada — dá pra Voltar (continuar) depois.';
+  if(!confirm(msg)) return;
+  $('mon-stop').disabled = true; $('mon-kill').disabled = true;
+  $('mon-run').innerHTML = '<span class="badge warn">' + (hard ? 'encerrando…' : 'parando…') + '</span>';
   try{
     const r = await api('/campaign/stop', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
     const j = await r.json().catch(() => ({}));
-    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">pausando…</span> termina a onda atual e para (' + (j.parando || 0) + ' run) — fila preservada'; loadMonitor(); }
-    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-stop').disabled = false; }
-  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-stop').disabled = false; }
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge ok">' + (hard ? 'encerrada' : 'pausada') + '</span> ' + (j.parando || 0) + ' run parado — fila preservada'; loadMonitor(); }
+    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-stop').disabled = false; $('mon-kill').disabled = false; }
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-stop').disabled = false; $('mon-kill').disabled = false; }
+}
+$('mon-start').onclick = () => {
+  const batch = $('mon-batch').value;
+  if(!batch){ alert('selecione um batch'); return; }
+  const resume = $('mon-start').dataset.mode === 'resume';
+  const msg = resume
+    ? 'Voltar a campanha do batch ' + batch + '?\n\nRetoma de onde parou, SEM redistribuir (usa as sessions já nas VPS).'
+    : 'Iniciar a campanha do batch ' + batch + '?\n\nIsso vai DISPARAR os envios de verdade nas VPS ativas.';
+  if(confirm(msg)) startCampaign(batch, resume);
 };
+$('mon-fresh').onclick = () => {
+  const batch = $('mon-batch').value;
+  if(!batch) return;
+  if(confirm('Recomeçar do ZERO o batch ' + batch + '?\n\nRedistribui as sessions de novo (mais lento). Use "Voltar" se só quer continuar de onde parou.')) startCampaign(batch, false);
+};
+$('mon-stop').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, false); };
+$('mon-kill').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, true); };
 
 // ── bootstrap: decide login vs painel ─────────────────
 (async () => { const m = await whoami(); if(m) await showApp(m); else showLogin(); })();
