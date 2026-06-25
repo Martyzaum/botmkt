@@ -185,4 +185,17 @@ export function recentWaves(batch, limit = 50) {
   ).all(batch, limit);
 }
 
+// apaga TODO o rastro do batch no SQLite (ondas + resultados + inventários)
+export function deleteBatch(batch) {
+  const out = {};
+  db.exec('BEGIN');
+  try {
+    for (const t of ['waves', 'slot_results', 'sessions_inv', 'telefones_inv']) {
+      out[t] = db.prepare(`DELETE FROM ${t} WHERE batch = ?`).run(batch).changes;
+    }
+    db.exec('COMMIT');
+  } catch (e) { try { db.exec('ROLLBACK'); } catch { /* nada */ } throw e; }
+  return out;
+}
+
 export { DB_FILE };

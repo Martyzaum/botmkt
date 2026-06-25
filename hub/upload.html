@@ -373,6 +373,7 @@
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
+      <button id="mon-del" class="btn btn-secondary" style="width:auto;display:none;margin-left:auto;border-color:#e15a5a;color:#ef9a9a" type="button">🗑 Excluir</button>
     </div>
     <div class="muted" id="mon-run" style="margin:-6px 0 14px"></div>
     <div id="mon-progress" style="margin-bottom:14px"></div>
@@ -899,8 +900,10 @@ async function refreshCampaign(batch, q){
       .filter(x => x.playbook === 'campanha-fila' && x.args && x.args.batch === batch)
       .sort((a, b) => a.startedAt < b.startedAt ? 1 : -1)[0] || null; }
   }catch(e){}
-  const start = $('mon-start'), fresh = $('mon-fresh'), stop = $('mon-stop'), kill = $('mon-kill'), info = $('mon-run');
+  const start = $('mon-start'), fresh = $('mon-fresh'), stop = $('mon-stop'), kill = $('mon-kill'), info = $('mon-run'), del = $('mon-del');
   const running = !!run && run.status === 'running';
+  del.style.display = ''; del.disabled = running;
+  del.title = running ? 'pause ou encerre a campanha antes de excluir' : 'apaga TUDO do batch (sessions, telefones, ondas, histórico)';
   const done = (q && q.done) || 0, pend = (q && q.pending) || 0, leased = (q && q.leased) || 0, falta = pend + leased;
   const partial = !running && done > 0 && falta > 0; // já enviou algo e ainda sobra -> dá pra Voltar
   start.style.display = running ? 'none' : '';
@@ -973,6 +976,20 @@ $('mon-fresh').onclick = () => {
 };
 $('mon-stop').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, false); };
 $('mon-kill').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, true); };
+$('mon-del').onclick = async () => {
+  const batch = $('mon-batch').value;
+  if(!batch) return;
+  if($('mon-del').disabled){ alert('A campanha está rodando — pause ou encerre antes de excluir.'); return; }
+  if(!confirm('EXCLUIR a campanha "' + batch + '"?\n\nApaga TUDO: sessions, telefones, ondas e histórico. NÃO dá pra desfazer.')) return;
+  if(!confirm('Última confirmação — excluir "' + batch + '" de vez?')) return;
+  $('mon-del').disabled = true; $('mon-run').innerHTML = '<span class="badge warn">excluindo…</span>';
+  try{
+    const r = await api('/campaign/delete', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
+    const j = await r.json().catch(() => ({}));
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge ok">excluída</span> "' + esc(batch) + '" apagada'; await fillMonBatches(); loadMonitor(); }
+    else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-del').disabled = false; }
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-del').disabled = false; }
+};
 
 // ── bootstrap: decide login vs painel ─────────────────
 (async () => { const m = await whoami(); if(m) await showApp(m); else showLogin(); })();

@@ -500,13 +500,14 @@ const server = http.createServer(async (req, res) => {
       if (!txts.length) return send(res, 400, { error: 'nenhum .txt (URL) dentro do arquivo' });
       const link = String(txts[0].data.toString('utf8')).trim().split(/\r?\n/)[0].trim();
       if (!link) return send(res, 400, { error: '.txt vazio (sem URL)' });
-      // pega <telefone>/<numero>-<n>/... de CADA caminho, tirando qualquer wrapper
-      // antes (NÃO depende de onde o .txt está -> robusto a 1+ pastas externas no
-      // zip/rar e a backslash do Windows).
-      const reUnit = /(?:^|\/)(\d+\/\d+-\d+\/.*)$/;
+      // pega <telefone>/<numero><sep><n>/... de CADA caminho, tirando qualquer
+      // wrapper antes (NÃO depende de onde o .txt está -> robusto a 1+ pastas
+      // externas no zip/rar e a backslash do Windows). O separador da subpasta pode
+      // ser '-', '_' ou ESPAÇO (ex.: "6281217926465 1") -> normaliza tudo pra '-'.
+      const reUnit = /(?:^|\/)(\d+)\/(\d+)[\s_-]+(\d+)(\/.*)$/;
       const sess = entries
         .filter((e) => !/\.txt$/i.test(norm(e.name)))
-        .map((e) => { const m = norm(e.name).match(reUnit); return m ? { name: m[1], data: e.data } : null; })
+        .map((e) => { const m = norm(e.name).match(reUnit); return m ? { name: `${m[1]}/${m[2]}-${m[3]}${m[4]}`, data: e.data } : null; })
         .filter(Boolean);
       const { novas } = sess.length ? await ingestSessions(batch, tenant, sess, link) : { novas: [] };
       if (!novas.length) {
@@ -660,6 +661,26 @@ const server = http.createServer(async (req, res) => {
       (A.kind === 'token' || (r.args?.tenant || 'default') === A.tenant)); // sessão só para o próprio tenant
     for (const r of alvos) r.aborted = true;
     return send(res, 200, { ok: true, parando: alvos.length });
+  }
+  // excluir campanha pelo painel: APAGA tudo do batch (storage + fila + inventário/
+  // ondas no SQLite). Só se NÃO houver run rodando (tem que pausar/encerrar antes).
+  if (p === '/campaign/delete' && req.method === 'POST') {
+    const b = await readBody(req);
+    const batch = b.batch;
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (b.tenant || 'default');
+    if (A.kind === 'session' && batch !== A.tenant && !batch.startsWith(A.tenant + '-')) return send(res, 403, { error: 'batch de outro tenant' });
+    const rodando = [...runs.values()].find((r) =>
+      r.status === 'running' && r.playbook === 'campanha-fila' &&
+      r.args?.batch === batch && (r.args?.tenant || 'default') === tenant);
+    if (rodando) return send(res, 409, { error: 'campanha rodando — pause ou encerre antes de excluir', runId: rodando.id });
+    let st = { removed: 0 }, dbres = {};
+    try { st = await store.removeBatch(batch); } catch (e) { return send(res, 500, { error: 'falha apagando storage: ' + e.message }); }
+    try { await workqueue.remove(batch); } catch { /* fila best-effort */ }
+    try { dbres = db.deleteBatch(batch); } catch (e) { return send(res, 500, { error: 'falha apagando dados: ' + e.message }); }
+    // tira os runs encerrados desse batch do mapa (some do /runs e do dropdown)
+    for (const [id, r] of runs) if (r.args?.batch === batch && (r.args?.tenant || 'default') === tenant && r.status !== 'running') runs.delete(id);
+    return send(res, 200, { ok: true, batch, storage: st.removed, db: dbres });
   }
   if (p.startsWith('/run/') && req.method === 'GET') {
     const run = runs.get(p.slice('/run/'.length));

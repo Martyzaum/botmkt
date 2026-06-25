@@ -4,7 +4,7 @@
 // =====================================================================
 import path from 'node:path';
 import fs from 'node:fs';
-import { mkdir, readdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { AWS_CONFIG } from '../../config/aws.js';
 
@@ -73,6 +73,20 @@ const local = {
       for (const s of subs) if (s.isDirectory() && /^\d+-\d+$/.test(s.name)) out.push(`${t.name}/${s.name}`);
     }
     return out;
+  },
+  // apaga TODA a pasta do batch (+ sufixos __<agent> do modelo antigo de sessions)
+  async removeBatch(batch) {
+    const b = safeRel(batch);
+    if (!b) return { removed: 0 };
+    let ents = [];
+    try { ents = await readdir(STORAGE_DIR, { withFileTypes: true }); } catch { return { removed: 0 }; }
+    let removed = 0;
+    for (const e of ents) {
+      if (e.isDirectory() && (e.name === b || e.name.startsWith(b + '__'))) {
+        await rm(path.join(STORAGE_DIR, e.name), { recursive: true, force: true }); removed++;
+      }
+    }
+    return { removed };
   },
 };
 
@@ -166,6 +180,18 @@ function makeS3() {
         } while (t2);
       }
       return out;
+    },
+    async removeBatch(batch) {
+      const { ListObjectsV2Command, DeleteObjectsCommand } = await import('@aws-sdk/client-s3');
+      const Prefix = `${safeRel(batch)}/`;
+      let token, removed = 0;
+      do {
+        const r = await (await lazy()).send(new ListObjectsV2Command({ Bucket: AWS_CONFIG.s3Bucket, Prefix, ContinuationToken: token }));
+        const objs = (r.Contents || []).map((c) => ({ Key: c.Key }));
+        if (objs.length) { await (await lazy()).send(new DeleteObjectsCommand({ Bucket: AWS_CONFIG.s3Bucket, Delete: { Objects: objs } })); removed += objs.length; }
+        token = r.IsTruncated ? r.NextContinuationToken : undefined;
+      } while (token);
+      return { removed };
     },
   };
 }

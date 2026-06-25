@@ -8,7 +8,7 @@
 //  no restore, o que estava "leased" (onda interrompida) volta pra fila.
 // =====================================================================
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { store, safeRel } from './storage.js';
 
@@ -125,6 +125,12 @@ export async function status(batch) {
   let retrying = 0;
   for (const u of q.pending) if ((q.attempts.get(u.key) || 0) > 0) retrying++;
   return { total: q.total, pending: q.pending.length, leased: q.leased.size, done: q.doneCount, retrying };
+}
+
+// apaga a fila do batch (memória + arquivo de estado) — usado ao excluir campanha
+export async function remove(batch) {
+  queues.delete(batch);
+  try { await unlink(stateFile(batch)); } catch { /* não existe, ok */ }
 }
 
 // força reconstrução a partir do storage (ex.: subiu mais arquivos no batch)
