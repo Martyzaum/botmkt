@@ -498,17 +498,22 @@ const server = http.createServer(async (req, res) => {
       // content root = nível do .txt mais RASO (a URL); o resto são as sessions.
       const txts = entries.filter((e) => /\.txt$/i.test(norm(e.name))).sort((a, b) => norm(a.name).split('/').length - norm(b.name).split('/').length);
       if (!txts.length) return send(res, 400, { error: 'nenhum .txt (URL) dentro do arquivo' });
-      const txtPath = norm(txts[0].name), slash = txtPath.lastIndexOf('/');
-      const prefix = slash >= 0 ? txtPath.slice(0, slash + 1) : '';
       const link = String(txts[0].data.toString('utf8')).trim().split(/\r?\n/)[0].trim();
       if (!link) return send(res, 400, { error: '.txt vazio (sem URL)' });
-      // tira o wrapper (prefixo do content root) -> fica <telefone>/<numero>-<n>/...
+      // pega <telefone>/<numero>-<n>/... de CADA caminho, tirando qualquer wrapper
+      // antes (NÃO depende de onde o .txt está -> robusto a 1+ pastas externas no
+      // zip/rar e a backslash do Windows).
+      const reUnit = /(?:^|\/)(\d+\/\d+-\d+\/.*)$/;
       const sess = entries
         .filter((e) => !/\.txt$/i.test(norm(e.name)))
-        .map((e) => ({ name: norm(e.name).slice(prefix.length), data: e.data }))
-        .filter((e) => /^\d+\/\d+-\d+\//.test(e.name));
-      const { novas } = await ingestSessions(batch, tenant, sess, link);
-      if (!novas.length) return send(res, 400, { error: 'nenhuma session <telefone>/<numero>-<n> no arquivo', link });
+        .map((e) => { const m = norm(e.name).match(reUnit); return m ? { name: m[1], data: e.data } : null; })
+        .filter(Boolean);
+      const { novas } = sess.length ? await ingestSessions(batch, tenant, sess, link) : { novas: [] };
+      if (!novas.length) {
+        // diagnóstico: mostra o que saiu da extração pra achar a causa (estrutura x extração)
+        const ex = entries.filter((e) => !/\.txt$/i.test(norm(e.name))).slice(0, 6).map((e) => norm(e.name));
+        return send(res, 400, { error: 'nenhuma session <telefone>/<numero>-<n> no arquivo', link, entradas: entries.length, exemplos: ex });
+      }
       const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
       const ds = ativos.length ? await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas) : { results: [] };
       const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
