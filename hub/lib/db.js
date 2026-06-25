@@ -205,6 +205,19 @@ export function recentWaves(batch, limit = 50) {
   ).all(batch, limit);
 }
 
+// envios/erro por HORA (UTC), de slot_results: enviados=sucesso; erros=travado+erro.
+// Funciona pros dois modos (onda grava slot_results por slot; pipeline por evento).
+export function hourly(batch, tenant) {
+  const cond = tenant ? 'WHERE batch = ? AND tenant = ?' : 'WHERE batch = ?';
+  const a = tenant ? [batch, tenant] : [batch];
+  return db.prepare(
+    `SELECT substr(ts, 1, 13) AS hour,
+            SUM(CASE WHEN status = 'sucesso' THEN 1 ELSE 0 END) AS enviados,
+            SUM(CASE WHEN status IN ('travado','erro') THEN 1 ELSE 0 END) AS erros
+     FROM slot_results ${cond} GROUP BY hour ORDER BY hour`
+  ).all(...a);
+}
+
 // apaga TODO o rastro do batch no SQLite (ondas + resultados + inventários)
 export function deleteBatch(batch) {
   const out = {};

@@ -366,10 +366,15 @@
   <div id="monitor" hidden>
     <div class="mon-bar">
       <select id="mon-batch" title="batch a acompanhar"></select>
+      <select id="mon-mode" title="modo de envio (pipeline = cada slot independente; wave = ondas)" style="width:auto;padding:9px 10px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);color:var(--text);font:inherit">
+        <option value="pipeline">⚡ pipeline</option>
+        <option value="wave">🌊 wave</option>
+      </select>
       <button id="mon-start" class="btn btn-primary" style="width:auto" type="button" data-mode="fresh">▶ Iniciar campanha</button>
       <button id="mon-fresh" class="btn btn-secondary" style="width:auto;display:none" type="button" title="recomeçar do zero — redistribui as sessions de novo (mais lento)">▶ do zero</button>
       <button id="mon-stop" class="btn btn-secondary" style="width:auto;display:none" type="button" title="para na hora; dá pra Voltar (continuar) depois">⏸ Pausar</button>
       <button id="mon-kill" class="btn btn-secondary" style="width:auto;display:none;border-color:#e15a5a;color:#ef9a9a" type="button" title="encerrar de vez — mata o run na hora, mesmo travado / sem agente">⏹ Encerrar</button>
+      <button id="mon-migrate" class="btn btn-secondary" style="width:auto;display:none;border-color:#1d9e75;color:#5dcaa5" type="button" title="migrar de wave -> pipeline: pausa o modo onda e recomeça em pipeline na MESMA fila/sessions">⚡ migrar pra pipeline</button>
       <button id="mon-refresh" class="btn btn-secondary" style="width:auto">Atualizar</button>
       <label class="muted"><input type="checkbox" id="mon-auto" checked> auto (5s)</label>
       <span class="muted" id="mon-status"></span>
@@ -379,6 +384,10 @@
     <div id="mon-progress" style="margin-bottom:14px"></div>
     <div class="stats" id="mon-queue"></div>
     <div class="muted" id="mon-sub" style="margin:10px 0 16px"></div>
+    <section class="card">
+      <div class="card-h"><span class="step">↗</span><div><h2>Envios / erro por hora</h2><p class="hint">verde = enviados · vermelho = travado/erro (atualiza junto)</p></div></div>
+      <div id="mon-hourly"><div class="muted" style="font-size:12px">sem dados ainda</div></div>
+    </section>
     <section class="card">
       <div class="card-h"><span class="step">+</span><div><h2>Adicionar sessions</h2><p class="hint">sobe e distribui pras VPS ativas na hora — a próxima onda já usa (útil se o pool acabar com telefones sobrando)</p></div></div>
       <div id="add-sess-mount"></div>
@@ -729,15 +738,16 @@ async function loadMonitor(){
   if(!batch){ $('mon-progress').innerHTML = ''; $('mon-queue').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
   $('mon-status').textContent = 'atualizando…';
   try{
-    const [st, wv, er, inv, q, lg] = await Promise.all([
+    const [st, wv, er, inv, q, lg, hr] = await Promise.all([
       api('/stats?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/waves?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ waves: [] })),
       api('/erros?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ erros: [] })),
       api('/inventory?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/queue?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/logs?tail=300').then(r => r.json()).catch(() => ({ agents: [] })),
+      api('/hourly?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ hourly: [] })),
     ]);
-    renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg);
+    renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg); renderHourly(hr.hourly || []);
     refreshCampaign(batch, q);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
@@ -769,6 +779,27 @@ function renderQueue(q, inv){
     '<div class="stat ' + c.c + '"><div class="n">' + c.n + '</div>'
     + '<div class="l">' + c.l + (c.sub ? '<br><span style="font-weight:400;opacity:.75">' + c.sub + '</span>' : '') + '</div></div>'
   ).join('');
+}
+// gráfico envios/erro por HORA (SVG inline, sem dependência). verde=enviados, vermelho=erro/travado
+function renderHourly(rows){
+  const box = $('mon-hourly'); if(!box) return;
+  rows = rows || [];
+  if(!rows.length){ box.innerHTML = '<div class="muted" style="font-size:12px">sem dados ainda</div>'; return; }
+  const max = Math.max(1, ...rows.map(r => Math.max(r.enviados||0, r.erros||0)));
+  const W = 760, padL = 30, padB = 22, padT = 8, H = 175, innerH = H - padB - padT;
+  const n = rows.length, groupW = (W - padL) / n, bw = Math.max(3, Math.min(20, groupW/3));
+  const hourLabel = (h) => { try { return new Date(h + ':00:00Z').getHours() + 'h'; } catch(e){ return String(h).slice(-2)+'h'; } };
+  const y = v => padT + innerH - (v/max)*innerH;
+  let bars = '';
+  rows.forEach((r,i) => {
+    const cx = padL + i*groupW + groupW/2, en = r.enviados||0, er = r.erros||0;
+    bars += '<rect x="'+(cx-bw-1).toFixed(1)+'" y="'+y(en).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+(padT+innerH-y(en)).toFixed(1)+'" fill="var(--ok)" rx="2"><title>'+en+' enviados</title></rect>';
+    bars += '<rect x="'+(cx+1).toFixed(1)+'" y="'+y(er).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+(padT+innerH-y(er)).toFixed(1)+'" fill="var(--err)" rx="2"><title>'+er+' erro/travado</title></rect>';
+    if(i % Math.ceil(n/12 || 1) === 0 || i === n-1) bars += '<text x="'+cx.toFixed(1)+'" y="'+(H-6)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+hourLabel(r.hour)+'</text>';
+  });
+  const axis = '<text x="2" y="'+(padT+9)+'" font-size="10" fill="var(--faint)">'+max+'</text>'
+    + '<line x1="'+padL+'" y1="'+(padT+innerH)+'" x2="'+W+'" y2="'+(padT+innerH)+'" stroke="var(--border)" stroke-width="1"/>';
+  box.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="max-height:185px" role="img" aria-label="envios e erros por hora">'+axis+bars+'</svg>';
 }
 // logs ao vivo de TODAS as VPS do tenant, mesclados por horário, com auto-scroll
 function renderLogs(data){
@@ -900,10 +931,15 @@ async function refreshCampaign(batch, q){
       .filter(x => x.playbook === 'campanha-fila' && x.args && x.args.batch === batch)
       .sort((a, b) => a.startedAt < b.startedAt ? 1 : -1)[0] || null; }
   }catch(e){}
-  const start = $('mon-start'), fresh = $('mon-fresh'), stop = $('mon-stop'), kill = $('mon-kill'), info = $('mon-run'), del = $('mon-del');
+  const start = $('mon-start'), fresh = $('mon-fresh'), stop = $('mon-stop'), kill = $('mon-kill'), info = $('mon-run'), del = $('mon-del'), mig = $('mon-migrate'), modeSel = $('mon-mode');
   const running = !!run && run.status === 'running';
+  const runMode = (run && run.args && run.args.mode) || 'wave';
   del.style.display = ''; del.disabled = running;
   del.title = running ? 'pause ou encerre a campanha antes de excluir' : 'apaga TUDO do batch (sessions, telefones, ondas, histórico)';
+  // seletor de modo: travado no modo do run enquanto roda; livre quando parado
+  if(running){ modeSel.value = runMode; modeSel.disabled = true; } else { modeSel.disabled = false; }
+  // botão "migrar pra pipeline" só com um run de ONDA rodando
+  mig.style.display = (running && runMode === 'wave') ? '' : 'none'; mig.disabled = false;
   const done = (q && q.done) || 0, pend = (q && q.pending) || 0, leased = (q && q.leased) || 0, falta = pend + leased;
   const partial = !running && done > 0 && falta > 0; // já enviou algo e ainda sobra -> dá pra Voltar
   start.style.display = running ? 'none' : '';
@@ -935,16 +971,30 @@ async function refreshCampaign(batch, q){
     info.textContent = '';
   }
 }
-async function startCampaign(batch, skipSetup){
+async function startCampaign(batch, skipSetup, modeOverride){
+  const mode = modeOverride || $('mon-mode').value || 'pipeline';
   $('mon-start').disabled = true; $('mon-fresh').disabled = true;
-  $('mon-run').innerHTML = '<span class="badge warn">' + (skipSetup ? 'voltando…' : 'iniciando…') + '</span>';
+  $('mon-run').innerHTML = '<span class="badge warn">' + (skipSetup ? 'voltando…' : 'iniciando…') + '</span> (' + mode + ')';
   try{
-    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch, skipSetup }) });
+    const r = await api('/campaign/start', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch, skipSetup, mode }) });
     const j = await r.json().catch(() => ({}));
-    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha ' + (skipSetup ? 'retomada' : 'iniciada'); loadMonitor(); }
+    if(r.ok){ $('mon-run').innerHTML = '<span class="badge warn">rodando</span> campanha ' + (skipSetup ? 'retomada' : 'iniciada') + ' (' + (j.mode || mode) + ')'; loadMonitor(); }
     else if(r.status === 409){ $('mon-run').innerHTML = '<span class="badge warn">já rodando</span> nesse batch'; loadMonitor(); }
     else { $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(j.error || ('HTTP ' + r.status)); $('mon-start').disabled = false; $('mon-fresh').disabled = false; }
   }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-start').disabled = false; $('mon-fresh').disabled = false; }
+}
+// migrar wave -> pipeline: pausa (abort-aware = instantâneo) e recomeça em pipeline na MESMA fila
+async function migrateToPipeline(batch){
+  if(!batch) return;
+  if(!confirm('Migrar "' + batch + '" pra PIPELINE?\n\nPausa o modo onda AGORA e recomeça em pipeline na MESMA fila/sessions (nada se perde).')) return;
+  $('mon-migrate').disabled = true;
+  $('mon-run').innerHTML = '<span class="badge warn">migrando…</span> parando o modo onda';
+  try{
+    await api('/campaign/stop', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ batch }) });
+    for(let i=0;i<45;i++){ const s = await api('/campaign/state?batch=' + encodeURIComponent(batch)).then(r=>r.json()).catch(()=>({})); if(!s.running) break; await new Promise(r=>setTimeout(r,1000)); }
+    $('mon-run').innerHTML = '<span class="badge warn">migrando…</span> iniciando pipeline';
+    await startCampaign(batch, true, 'pipeline');
+  }catch(e){ $('mon-run').innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); $('mon-migrate').disabled = false; }
 }
 async function stopCampaign(batch, hard){
   const msg = hard
@@ -976,6 +1026,7 @@ $('mon-fresh').onclick = () => {
 };
 $('mon-stop').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, false); };
 $('mon-kill').onclick = () => { const b = $('mon-batch').value; if(b) stopCampaign(b, true); };
+$('mon-migrate').onclick = () => { const b = $('mon-batch').value; if(b) migrateToPipeline(b); };
 $('mon-del').onclick = async () => {
   const batch = $('mon-batch').value;
   if(!batch) return;

@@ -607,6 +607,12 @@ const server = http.createServer(async (req, res) => {
     if (!batch) return send(res, 400, { error: 'batch obrigatório' });
     return send(res, 200, { waves: db.recentWaves(batch) });
   }
+  if (p === '/hourly' && req.method === 'GET') {
+    const batch = url.searchParams.get('batch');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : url.searchParams.get('tenant');
+    return send(res, 200, { hourly: db.hourly(batch, tenant) });
+  }
   // contadores AO VIVO da fila: pending / leased(processando) / retrying / done
   if (p === '/queue' && req.method === 'GET') {
     const batch = url.searchParams.get('batch');
