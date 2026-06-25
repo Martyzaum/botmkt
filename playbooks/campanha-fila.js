@@ -78,7 +78,11 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   // Intrínseco = wave (compat com /play e testes); o painel (/campaign/start)
   // manda 'pipeline' por padrão.
   const mode = args.mode === 'pipeline' ? 'pipeline' : 'wave';
-  const leaseTtlMs = Number(args.leaseTtlMs || 10 * 60 * 1000);
+  // TTL TEM que ser > a duração de UM envio (cada lote tem ~1000 números -> 15-30min);
+  // senão o reaper devolve lease ativo e o lote é re-enviado (duplicado) + o commit
+  // se perde. O reap por AGENTE OFFLINE (imediato) é quem cobre VPS caída de verdade;
+  // este TTL por tempo é só backstop p/ worker morto com agente vivo (raro).
+  const leaseTtlMs = Number(args.leaseTtlMs || 60 * 60 * 1000);
   const pipelineTimeout = Number(args.pipelineTimeout || 24 * 60 * 60 * 1000);
   const WAVE = Number(args.wave || 16);
   const maxSemSucesso = Number(args.maxSemSucesso || 2); // desiste após N ondas seguidas com 0 envio
