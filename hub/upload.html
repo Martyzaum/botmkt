@@ -866,19 +866,21 @@ function renderStatus(s){
 }
 // ── inventário (pending/usado/erro) ──
 function invPill(cls, label, n){ return '<span class="inv-pill ' + cls + '">' + (n != null ? '<b>' + n + '</b> ' : '') + label + '</span>'; }
-function invPend(list, fmt){
+function invPend(list, fmt, label){
   list = list || [];
   if(!list.length) return '<div class="muted" style="font-size:12px">nada pending 🎉</div>';
-  return '<details class="inv-pend"><summary>ver ' + list.length + ' pending</summary><div class="list">' + list.map(fmt).join('<br>') + '</div></details>';
+  return '<details class="inv-pend"><summary>' + (label || ('ver ' + list.length + ' pending')) + '</summary><div class="list">' + list.map(fmt).join('<br>') + '</div></details>';
 }
 function renderInventory(inv){
   const s = inv.sessions || {}, t = inv.telefones || {};
-  $('inv-s-tot').textContent = '· ' + (s.total || 0) + ' total';
+  $('inv-s-tot').textContent = '· ' + (s.total || 0) + ' subidas';
   $('inv-t-tot').textContent = '· ' + (t.total || 0) + ' lotes · ' + (t.numeros || 0).toLocaleString('pt-BR') + ' números';
+  // saúde REAL (dos eventos): testadas/boas/mortas. "não usadas" do sessions_inv
+  // engana no pipeline (session reusada perde o id) -> só mostra como aproximado.
   $('inv-sessions').innerHTML = '<div class="inv-counts">'
-    + invPill('pend', 'não usadas', s.pending || 0) + invPill('ok', 'usadas', s.usada || 0)
-    + (s.travado ? invPill('warn', s.travado + ' travaram') : '') + (s.erro ? invPill('err', s.erro + ' erro') : '')
-    + '</div>' + invPend(s.pendingList, x => esc(x.subsession));
+    + invPill('', (s.testadas || 0) + ' testadas') + invPill('ok', 'boas (enviaram)', s.boas || 0)
+    + invPill('warn', 'mortas (travaram)', s.mortas || 0)
+    + '</div>' + invPend(s.pendingList, x => esc(x.subsession), '~' + (s.pending || 0) + ' não testadas (aprox.)');
   $('inv-telefones').innerHTML = '<div class="inv-counts">'
     + invPill('pend', 'pending', t.pending || 0) + invPill('ok', 'enviados', t.enviado || 0)
     + invPill('', (t.tentativas || 0) + ' tentativas')
