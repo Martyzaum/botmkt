@@ -42,7 +42,7 @@ async function restore(batch) {
     const leasedUnits = (data.leased || []).map((l) => ({ key: l.key, num: l.num, files: l.files }))
       .filter((u) => u.files); // só se temos os arquivos persistidos
     const pending = [...leasedUnits, ...(data.pending || [])];
-    return { pending, leased: new Map(), doneCount: data.doneCount || 0, total: data.total || pending.length, attempts: new Map(data.attempts || []) };
+    return { pending, leased: new Map(), doneCount: data.doneCount || 0, total: data.total || pending.length, attempts: new Map(data.attempts || []), leaseTtlMs: Infinity };
   } catch { return null; }
 }
 
@@ -56,7 +56,7 @@ async function build(batch) {
     byNum.get(key).files.push({ rel: f });
   }
   const pending = [...byNum.values()].sort((a, b) => a.num - b.num || a.key.localeCompare(b.key));
-  return { pending, leased: new Map(), doneCount: 0, total: pending.length, attempts: new Map() };
+  return { pending, leased: new Map(), doneCount: 0, total: pending.length, attempts: new Map(), leaseTtlMs: Infinity };
 }
 
 export async function ensure(batch) {
@@ -95,6 +95,52 @@ export async function requeue(batch, units) {
   await persist(batch, q);
   return { requeued: units.map((u) => u.key) };
 }
+
+// requeue por KEY (pipeline/HTTP): o worker manda só a key; reconstrói a unit do
+// próprio leased (que guarda num+files) e devolve pro FIM sem penalizar.
+export async function requeueKeys(batch, keys) {
+  const q = await ensure(batch);
+  const requeued = [];
+  for (const k of keys) {
+    const v = q.leased.get(k);
+    if (!v) continue;
+    q.leased.delete(k);
+    q.pending.push({ key: k, num: v.num, files: v.files });
+    requeued.push(k);
+  }
+  await persist(batch, q);
+  return { requeued };
+}
+
+// define o TTL de lease do batch (pipeline seta ~10min; wave fica Infinity).
+export async function setTtl(batch, ms) {
+  const q = await ensure(batch);
+  q.leaseTtlMs = Number.isFinite(ms) && ms > 0 ? ms : Infinity;
+  return q.leaseTtlMs;
+}
+
+// devolve pra fila os leases órfãos: agente offline OU segurando além do TTL.
+// Mode-aware: wave usa ttl=Infinity -> só reapa lease de agente offline (sem
+// risco de clobber, pois o agente dá heartbeat durante a onda).
+export async function reapStale(batch, isOnline = () => true) {
+  const q = queues.get(batch);
+  if (!q || !q.leased.size) return { reaped: [] };
+  const now = Date.now(), reaped = [];
+  for (const [k, v] of [...q.leased.entries()]) {
+    const offline = !isOnline(v.agent);
+    const expirou = Number.isFinite(q.leaseTtlMs) && (now - v.at) > q.leaseTtlMs;
+    if (offline || expirou) {
+      q.leased.delete(k);
+      q.pending.push({ key: k, num: v.num, files: v.files });
+      reaped.push(k);
+    }
+  }
+  if (reaped.length) await persist(batch, q);
+  return { reaped };
+}
+
+// batches atualmente em memória (pro reaper varrer só o que está ativo)
+export function activeBatches() { return [...queues.keys()]; }
 
 // erro num número: conta a tentativa e devolve pro FIM da fila p/ retry com
 // outra session. Esgotou maxAttempts -> descarta (conta como done).

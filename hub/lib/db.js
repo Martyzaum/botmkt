@@ -129,6 +129,26 @@ export function recordWave(rec) {
   return wid;
 }
 
+// PIPELINE: grava 1 evento de slot (sem onda). status = sucesso|travado|erro.
+// rec: { tenant, batch, agent, slot, status, key, session, motivo }
+// telefones_inv só vira 'enviado' no sucesso (falha = requeue -> fica 'pending',
+// igual ao modelo de onda; número não é descartado). sessions_inv vira 'usada'.
+export function recordSlotEvent(rec) {
+  const ts = now();
+  const tenant = rec.tenant || 'default';
+  const unit = rec.key || null;
+  const subsession = rec.session || null;
+  const slot = rec.slot | 0;
+  const phone = unit ? (phoneOf.get(rec.batch, unit)?.phone ?? null) : null;
+  insSlot.run(null, ts, tenant, rec.batch, rec.agent || null, 0, slot, rec.status, unit, rec.motivo || null, subsession, phone);
+  if (subsession) markSessUsed.run(rec.status, rec.agent || null, 0, slot, ts, rec.batch, subsession);
+  if (unit) {
+    bumpTel.run(rec.agent || null, 0, slot, ts, rec.batch, unit);
+    if (rec.status === 'sucesso') setTelStatus.run('enviado', rec.batch, unit);
+  }
+  return true;
+}
+
 // agregados por batch (opcionalmente filtrando tenant)
 export function statsByBatch(batch, tenant) {
   const cond = tenant ? 'WHERE batch = ? AND tenant = ?' : 'WHERE batch = ?';

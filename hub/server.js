@@ -686,6 +686,49 @@ const server = http.createServer(async (req, res) => {
     for (const [id, r] of runs) if (r.args?.batch === batch && (r.args?.tenant || 'default') === tenant && r.status !== 'running') runs.delete(id);
     return send(res, 200, { ok: true, batch, storage: st.removed, db: dbres });
   }
+
+  // ===== FILA por HTTP (modo PIPELINE: o slot-pool.js da VPS consome direto) =====
+  // token-only (o agente tem o HUB_TOKEN). batch+agent no body.
+  if (p === '/q/lease' && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente agente (token)' });
+    const b = await readBody(req);
+    if (!b.batch || !b.agent) return send(res, 400, { error: 'batch e agent obrigatórios' });
+    const units = await workqueue.lease(b.batch, b.agent, Math.max(1, Math.min(64, (b.n | 0) || 1)));
+    return send(res, 200, { units });
+  }
+  if (p === '/q/commit' && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente agente (token)' });
+    const b = await readBody(req);
+    if (!b.batch) return send(res, 400, { error: 'batch obrigatório' });
+    await workqueue.commit(b.batch, b.keys || []);
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/q/requeue' && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente agente (token)' });
+    const b = await readBody(req);
+    if (!b.batch) return send(res, 400, { error: 'batch obrigatório' });
+    return send(res, 200, await workqueue.requeueKeys(b.batch, b.keys || []));
+  }
+  // 1 evento por slot (resultado de um envio) -> slot_results + inventário.
+  if (p === '/slot/event' && req.method === 'POST') {
+    if (A.kind !== 'token') return send(res, 403, { error: 'somente agente (token)' });
+    const b = await readBody(req);
+    if (!b.batch || !b.status) return send(res, 400, { error: 'batch e status obrigatórios' });
+    try { db.recordSlotEvent(b); } catch (e) { console.log(`⚠ slot/event: ${e.message}`); }
+    return send(res, 200, { ok: true });
+  }
+  // estado da campanha p/ o worker pollar (pausar/encerrar) — token (query) ou sessão.
+  if (p === '/campaign/state' && req.method === 'GET') {
+    const batch = url.searchParams.get('batch');
+    if (!batch) return send(res, 400, { error: 'batch obrigatório' });
+    const tenant = A.kind === 'session' ? A.tenant : (url.searchParams.get('tenant') || 'default');
+    const run = [...runs.values()].find((r) =>
+      r.playbook === 'campanha-fila' && r.args?.batch === batch &&
+      (r.args?.tenant || 'default') === tenant && r.status === 'running');
+    const st = await workqueue.status(batch);
+    return send(res, 200, { running: !!run, aborted: run ? !!run.aborted : false, mode: run?.args?.mode || null, ...st });
+  }
+
   if (p.startsWith('/run/') && req.method === 'GET') {
     const run = runs.get(p.slice('/run/'.length));
     if (!run) return send(res, 404, { error: 'run desconhecido' });
@@ -700,5 +743,16 @@ const server = http.createServer(async (req, res) => {
 
   return send(res, 404, { error: 'rota desconhecida' });
 });
+
+// reaper: devolve à fila os leases órfãos (agente offline OU além do TTL do batch).
+// Mode-aware: wave usa TTL=Infinity -> só reapa agente offline; pipeline ~10min.
+const isOnlineById = (id) => { const a = agents.get(id); return a ? isOnline(a) : false; };
+setInterval(() => {
+  for (const batch of workqueue.activeBatches()) {
+    workqueue.reapStale(batch, isOnlineById)
+      .then((r) => { if (r.reaped.length) console.log(`reaper ${batch}: ${r.reaped.length} lease(s) órfão(s) -> fila`); })
+      .catch(() => {});
+  }
+}, 30_000).unref?.();
 
 server.listen(PORT, () => console.log(`Hub na porta ${PORT} | storage=${usingS3 ? 'S3' : 'local'} | fila=${usingSqs ? 'SQS' : 'memória'}`));
