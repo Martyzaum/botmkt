@@ -124,7 +124,7 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
     const resultados = await Promise.all(ags.map((agent) =>
       run(agent, node('slot-pool.js', envOf(agent)), { timeoutMs: pipelineTimeout })
         .then((r) => {
-          const err = r.code ? ' | ' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-3).join(' ⏎ ') : '';
+          const err = r.code ? ' | ' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-8).join(' ⏎ ') : '';
           log(`[${agent}] slot-pool encerrou (code=${r.code})${err}`);
           return { agent, code: r.code };
         })
