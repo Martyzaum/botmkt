@@ -417,14 +417,6 @@
       </div>
     </section>
     <section class="card">
-      <div class="card-h"><span class="step">↻</span><div><h2>Ondas recentes</h2><p class="hint">cada VPS por onda. "na fila" pode SUBIR: número que trava volta pra fila pra tentar de novo</p></div></div>
-      <div style="overflow:auto"><table class="tbl" id="mon-waves"></table></div>
-    </section>
-    <section class="card">
-      <div class="card-h"><span class="step">!</span><div><h2>Números com problema</h2><p class="hint">erro/travado, com motivo</p></div></div>
-      <div style="overflow:auto"><table class="tbl" id="mon-erros"></table></div>
-    </section>
-    <section class="card">
       <div class="card-h"><span class="step">»</span><div><h2>Logs ao vivo</h2><p class="hint">o que cada slot das VPS está fazendo agora (atualiza junto)</p></div></div>
       <pre class="logbox" id="mon-logs">(sem logs ainda — aparecem quando a campanha roda)</pre>
     </section>
@@ -750,20 +742,18 @@ async function fillMonBatches(){
 
 async function loadMonitor(){
   const batch = $('mon-batch').value;
-  if(!batch){ $('mon-progress').innerHTML = ''; $('mon-queue').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-waves').innerHTML = '<tr><td class="empty">selecione um batch</td></tr>'; $('mon-erros').innerHTML = ''; return; }
+  if(!batch){ $('mon-progress').innerHTML = ''; $('mon-queue').innerHTML = ''; $('mon-sub').textContent = ''; $('mon-slots').innerHTML = ''; return; }
   $('mon-status').textContent = 'atualizando…';
   try{
-    const [st, wv, er, inv, q, lg, hr, sl] = await Promise.all([
+    const [st, inv, q, lg, hr, sl] = await Promise.all([
       api('/stats?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
-      api('/waves?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ waves: [] })),
-      api('/erros?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ erros: [] })),
       api('/inventory?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/queue?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({})),
       api('/logs?tail=300').then(r => r.json()).catch(() => ({ agents: [] })),
       api('/hourly?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ hourly: [] })),
       api('/slots?batch=' + encodeURIComponent(batch)).then(r => r.json()).catch(() => ({ slots: [] })),
     ]);
-    renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderWaves(wv.waves || []); renderErros(er.erros || []); renderInventory(inv); renderLogs(lg); renderHourly(hr.hourly || []); renderSlots(sl.slots || []);
+    renderProgress(inv); renderQueue(q, inv); renderStatus(st); renderInventory(inv); renderLogs(lg); renderHourly(hr.hourly || []); renderSlots(sl.slots || []);
     refreshCampaign(batch, q);
     $('mon-status').textContent = 'atualizado ' + hhmmss(new Date().toISOString());
   }catch(e){ $('mon-status').textContent = 'erro: ' + e.message; }
@@ -869,38 +859,10 @@ function renderLogs(data){
 }
 // linha de status (resumo das ondas) — sem cards, só texto claro
 function renderStatus(s){
-  $('mon-sub').textContent = (s && s.ondas != null)
-    ? (s.ondas || 0) + ' onda(s) rodadas'
-      + (s.travado ? ' · ' + s.travado + ' slot(s) travaram (session ruim)' : '')
-      + (s.inicio ? ' · início ' + hhmmss(s.inicio) : '')
-      + (s.fim ? ' · última ' + hhmmss(s.fim) : '')
-    : 'sem dados ainda — a campanha grava aqui conforme roda';
-}
-function renderWaves(waves){
-  const t = $('mon-waves');
-  if(!waves.length){ t.innerHTML = '<tr><td class="empty">sem ondas ainda</td></tr>'; return; }
-  let h = '<tr><th>hora</th><th>VPS</th><th>onda</th><th title="enviados">✓</th><th title="travados (session ruim)">⚠</th><th title="erro">✗</th><th title="quantos voltaram pra fila depois desta onda">na fila</th></tr>';
-  for(const w of waves){
-    h += '<tr><td>' + hhmmss(w.ts) + '</td><td>' + esc(w.agent) + '</td><td>' + (w.wave|0) + '</td>'
-      + '<td style="color:var(--ok);font-weight:700">' + (w.sucesso|0) + '</td>'
-      + '<td style="color:var(--warn);font-weight:700">' + (w.travado|0) + '</td>'
-      + '<td style="color:var(--err);font-weight:700">' + (w.erro|0) + '</td>'
-      + '<td>' + (w.pending_after ?? '—') + '</td></tr>';
-  }
-  t.innerHTML = h;
-}
-function renderErros(erros){
-  const t = $('mon-erros');
-  if(!erros.length){ t.innerHTML = '<tr><td class="empty">nenhum número com problema 🎉</td></tr>'; return; }
-  let h = '<tr><th>telefone</th><th>session</th><th>status</th><th>motivo</th><th>VPS/onda</th></tr>';
-  for(const e of erros){
-    const cls = e.status === 'erro' ? 'err' : 'warn';
-    h += '<tr><td>' + (e.phone ? fmtPhone(e.phone) : esc(e.numero || '—')) + '</td><td>' + esc(e.session || '—') + '</td>'
-      + '<td><span class="badge ' + cls + '">' + esc(e.status) + '</span></td>'
-      + '<td class="muted" style="white-space:normal;max-width:300px">' + esc(e.motivo || '—') + '</td>'
-      + '<td>' + esc(e.agent) + ' / ' + (e.wave|0) + '</td></tr>';
-  }
-  t.innerHTML = h;
+  const parts = [];
+  if(s && s.inicio) parts.push('início ' + hhmmss(s.inicio));
+  if(s && s.fim) parts.push('última atividade ' + hhmmss(s.fim));
+  $('mon-sub').textContent = parts.join(' · ');
 }
 // ── inventário (pending/usado/erro) ──
 function invPill(cls, label, n){ return '<span class="inv-pill ' + cls + '">' + (n != null ? '<b>' + n + '</b> ' : '') + label + '</span>'; }
