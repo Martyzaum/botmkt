@@ -291,6 +291,7 @@ async function runPlaybook(name, args) {
     returnLease: (batch, units) => workqueue.returnLease(batch, units),
     retryLease: (batch, units, max) => workqueue.retryLease(batch, units, max),
     requeue: (batch, units) => workqueue.requeue(batch, units), // volta pro fim sem penalizar (session ruim)
+    setTtl: (batch, ms) => workqueue.setTtl(batch, ms),         // TTL de lease (pipeline)
     recordWave: (rec) => { try { return db.recordWave(rec); } catch (e) { log(`⚠ db: ${e.message}`); return null; } },
     syncTelefones: (agent, batch, units, opts = {}) =>
       enqueueAndWait(
@@ -649,7 +650,8 @@ const server = http.createServer(async (req, res) => {
     const tenant = A.kind === 'session' ? A.tenant : (b.tenant || 'default');
     const running = [...runs.values()].find((r) => r.playbook === 'campanha-fila' && r.status === 'running' && r.args?.batch === batch && (r.args?.tenant || 'default') === tenant);
     if (running) return send(res, 409, { error: 'já há uma campanha rodando nesse batch', runId: running.id });
-    try { const run = await runPlaybook('campanha-fila', { batch, tenant, skipSetup: !!b.skipSetup }); return send(res, 200, { runId: run.id, status: run.status }); }
+    const mode = (b.mode === 'wave' || b.mode === 'pipeline') ? b.mode : 'pipeline'; // painel: default PIPELINE
+    try { const run = await runPlaybook('campanha-fila', { batch, tenant, skipSetup: !!b.skipSetup, mode }); return send(res, 200, { runId: run.id, status: run.status, mode }); }
     catch (e) { return send(res, 400, { error: e.message }); }
   }
   // pausar campanha pelo painel: sinaliza o(s) run(s) desse batch p/ parar entre

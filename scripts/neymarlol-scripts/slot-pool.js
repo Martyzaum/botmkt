@@ -145,10 +145,12 @@ function runSupervisor(slot) {
 // ---- estado da campanha (abort) ----------------------------------------
 const flag = { stop: false };
 async function abortPoller() {
-  while (!flag.stop) {
+  let sawRunning = false; // só trata running=false como "acabou" depois de ter visto rodando
+  while (!flag.stop) {    // (evita corrida no startup, antes do run ficar consultável)
     try {
       const s = await (await api(`/campaign/state?batch=${encodeURIComponent(BATCH)}&tenant=${encodeURIComponent(TENANT)}`)).json();
-      if (s.aborted || s.running === false) { flag.stop = true; log(`parando (aborted=${s.aborted} running=${s.running})`); break; }
+      if (s.running) sawRunning = true;
+      if (s.aborted || (sawRunning && s.running === false)) { flag.stop = true; log(`parando (aborted=${s.aborted} running=${s.running})`); break; }
     } catch {}
     await sleep(STATE_POLL_MS);
   }

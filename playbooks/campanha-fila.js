@@ -71,9 +71,15 @@ const parseSlotNumeros = (stdout) => {
 
 export const meta = { name: 'campanha-fila', description: 'Loop pull em ondas (sessions+telefones) por tenant' };
 
-export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, requeue, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args, isAborted }) {
+export default async function ({ agents, tenantAgents, distribute, lease, returnLease, retryLease, requeue, syncTelefones, syncConteudo, commitUnits, queueStatus, recordWave, run, log, args, isAborted, setTtl }) {
   const batch = args.batch;
   if (!batch) throw new Error('passe o batch: play campanha-fila \'{"batch":"..."}\'');
+  // modo: 'pipeline' (worker por slot, sem barreira) | 'wave' (ondas — legado).
+  // Intrínseco = wave (compat com /play e testes); o painel (/campaign/start)
+  // manda 'pipeline' por padrão.
+  const mode = args.mode === 'pipeline' ? 'pipeline' : 'wave';
+  const leaseTtlMs = Number(args.leaseTtlMs || 10 * 60 * 1000);
+  const pipelineTimeout = Number(args.pipelineTimeout || 24 * 60 * 60 * 1000);
   const WAVE = Number(args.wave || 16);
   const maxSemSucesso = Number(args.maxSemSucesso || 2); // desiste após N ondas seguidas com 0 envio
   const inactivity = Number(args.inactivity || 4 * 60 * 1000);
@@ -103,8 +109,27 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
   }
 
   const st0 = await queueStatus(batch);
-  log(`fila '${batch}'${args.tenant ? ` | tenant=${args.tenant}` : ''}: ${st0.pending} par(es) | ${ags.length} VPS (${ags.join(', ')}) | ondas de ${WAVE}`);
+  log(`fila '${batch}'${args.tenant ? ` | tenant=${args.tenant}` : ''}: ${st0.pending} pendente(s) | ${ags.length} VPS (${ags.join(', ')}) | modo=${mode}`);
   if (!st0.pending) { log('fila vazia — nada a fazer'); return { batch, vazio: true }; }
+
+  // ===== MODO PIPELINE: cada slot é um worker independente (slot-pool.js) =====
+  // Sem barreira de onda: o slot bom não espera o ruim. O hub é a fila; o worker
+  // faz lease/commit/requeue por HTTP. Lease TTL devolve órfão se a VPS cair.
+  if (mode === 'pipeline') {
+    try { await setTtl(batch, leaseTtlMs); } catch { /* setTtl é best-effort */ }
+    log(`modo PIPELINE: slot-pool em ${ags.length} VPS (lease TTL ${Math.round(leaseTtlMs / 1000)}s)`);
+    const envOf = (agent) =>
+      `$env:BATCH='${batch}'; $env:TENANT='${args.tenant || 'default'}'; $env:AGENT='${agent}'; ` +
+      `$env:SLOTS='${WAVE}'; $env:INACTIVITY_MS='${inactivity}';`;
+    const resultados = await Promise.all(ags.map((agent) =>
+      run(agent, node('slot-pool.js', envOf(agent)), { timeoutMs: pipelineTimeout })
+        .then((r) => { log(`[${agent}] slot-pool encerrou (code=${r.code})`); return { agent, code: r.code }; })
+        .catch((e) => { log(`[${agent}] slot-pool erro: ${e.message}`); return { agent, error: e.message }; })
+    ));
+    const fim = await queueStatus(batch);
+    log(`✔ fim (pipeline) | pendentes=${fim.pending} | enviados(done)=${fim.done}/${fim.total}`);
+    return { batch, modo: 'pipeline', fila: fim, resultados };
+  }
 
   // abre/fecha os terminais de log da VPS automaticamente (default ON; windows:false desliga)
   const wantWindows = args.windows !== false;
