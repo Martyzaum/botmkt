@@ -183,6 +183,7 @@ async function worker(slot, idx) {
     idle = 0;
     const unit = units[0];
     shared.inFlight++;
+    slotEvent({ slot, status: "rodando", key: unit.key, session: curSession }); // board ao vivo (fire-forget)
     let res;
     try { await buildSlot(slot, unit); res = await runSupervisor(slot); }
     catch (e) { res = { status: "erro", motivo: e.message }; }

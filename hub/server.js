@@ -31,6 +31,7 @@ const jobs = new Map();    // jobId -> job (status/result + _receipt p/ ack)
 const pending = new Map(); // jobId -> resolve()
 const runs = new Map();    // runId -> run
 const agentLogs = new Map(); // agent -> { tenant, lines: [] }  (logs ao vivo dos slots)
+const slotBoard = new Map(); // `${agent}#${slot}` -> estado ao vivo do slot (pipeline)
 const LOG_CAP = Number(process.env.LOG_CAP || 800);
 
 const now = () => new Date().toISOString();
@@ -717,13 +718,25 @@ const server = http.createServer(async (req, res) => {
     if (!b.batch) return send(res, 400, { error: 'batch obrigatório' });
     return send(res, 200, await workqueue.requeueKeys(b.batch, b.keys || []));
   }
-  // 1 evento por slot (resultado de um envio) -> slot_results + inventário.
+  // 1 evento por slot. 'rodando' = só board ao vivo; sucesso/travado/erro = board + DB.
   if (p === '/slot/event' && req.method === 'POST') {
     if (A.kind !== 'token') return send(res, 403, { error: 'somente agente (token)' });
     const b = await readBody(req);
     if (!b.batch || !b.status) return send(res, 400, { error: 'batch e status obrigatórios' });
-    try { db.recordSlotEvent(b); } catch (e) { console.log(`⚠ slot/event: ${e.message}`); }
+    slotBoard.set(`${b.agent}#${b.slot}`, {
+      agent: b.agent || null, slot: b.slot | 0, batch: b.batch, tenant: b.tenant || 'default',
+      status: b.status, key: b.key || null, session: b.session || null, motivo: b.motivo || null, ts: now(),
+    });
+    if (b.status !== 'rodando') { try { db.recordSlotEvent(b); } catch (e) { console.log(`⚠ slot/event: ${e.message}`); } }
     return send(res, 200, { ok: true });
+  }
+  // board ao vivo de TODOS os slots (pipeline): estado atual de cada slot/VPS.
+  if (p === '/slots' && req.method === 'GET') {
+    const batch = url.searchParams.get('batch');
+    let rows = [...slotBoard.values()];
+    if (batch) rows = rows.filter((s) => s.batch === batch);
+    if (A.kind === 'session') rows = rows.filter((s) => (s.tenant || 'default') === A.tenant);
+    return send(res, 200, { slots: rows });
   }
   // estado da campanha p/ o worker pollar (pausar/encerrar) — token (query) ou sessão.
   if (p === '/campaign/state' && req.method === 'GET') {

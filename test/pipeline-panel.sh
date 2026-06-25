@@ -47,9 +47,18 @@ EN=$(echo "$HR" | python3 -c "import sys,json;d=json.load(sys.stdin)['hourly'];p
 ER=$(echo "$HR" | python3 -c "import sys,json;d=json.load(sys.stdin)['hourly'];print(sum(r['erros'] for r in d))" 2>/dev/null)
 [ "$EN" = "1" ] && [ "$ER" = "1" ]; ok "$?" "/hourly: enviados=$EN erros=$ER (esperado 1/1)"
 HTML=$(curl -s "http://127.0.0.1:$PORT/")
-for el in "mon-mode" "mon-migrate" "mon-hourly" "Envios / erro por hora" "function renderHourly"; do
+for el in "mon-mode" "mon-migrate" "mon-hourly" "Envios / erro por hora" "function renderHourly" "mon-slots" "Slots ao vivo" "function renderSlots"; do
   echo "$HTML" | grep -q "$el"; ok "$?" "HTML servido tem: $el"
 done
+# board /slots: rodando (só board) -> sucesso (board + DB)
+ev(){ curl -s -H "authorization: Bearer $TOK" -H "content-type: application/json" -d "$1" "http://127.0.0.1:$PORT/slot/event" >/dev/null; }
+SLOTS_J(){ curl -s -H "authorization: Bearer $TOK" "http://127.0.0.1:$PORT/slots?batch=$B&tenant=zz"; }
+ev "{\"batch\":\"$B\",\"tenant\":\"zz\",\"agent\":\"vps1\",\"slot\":1,\"status\":\"rodando\",\"key\":\"num-9\"}"
+S=$(SLOTS_J | python3 -c "import sys,json;d=json.load(sys.stdin)['slots'];print(next((x['status'] for x in d if x['slot']==1 and x['agent']=='vps1'),'-'))" 2>/dev/null)
+[ "$S" = "rodando" ]; ok "$?" "/slots reflete 'rodando' (veio: $S)"
+ev "{\"batch\":\"$B\",\"tenant\":\"zz\",\"agent\":\"vps1\",\"slot\":1,\"status\":\"sucesso\",\"key\":\"num-9\"}"
+S=$(SLOTS_J | python3 -c "import sys,json;d=json.load(sys.stdin)['slots'];print(next((x['status'] for x in d if x['slot']==1 and x['agent']=='vps1'),'-'))" 2>/dev/null)
+[ "$S" = "sucesso" ]; ok "$?" "/slots atualiza p/ 'sucesso' (veio: $S)"
 kill $HUBPID 2>/dev/null; HUBPID=""
 node $SQLITE --input-type=module -e 'import * as db from "./hub/lib/db.js"; db.deleteBatch(process.argv[1]);' "$B" 2>/dev/null
 
