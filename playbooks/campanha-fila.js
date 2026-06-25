@@ -123,7 +123,11 @@ export default async function ({ agents, tenantAgents, distribute, lease, return
       `$env:SLOTS='${WAVE}'; $env:INACTIVITY_MS='${inactivity}';`;
     const resultados = await Promise.all(ags.map((agent) =>
       run(agent, node('slot-pool.js', envOf(agent)), { timeoutMs: pipelineTimeout })
-        .then((r) => { log(`[${agent}] slot-pool encerrou (code=${r.code})`); return { agent, code: r.code }; })
+        .then((r) => {
+          const err = r.code ? ' | ' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-3).join(' ⏎ ') : '';
+          log(`[${agent}] slot-pool encerrou (code=${r.code})${err}`);
+          return { agent, code: r.code };
+        })
         .catch((e) => { log(`[${agent}] slot-pool erro: ${e.message}`); return { agent, error: e.message }; })
     ));
     const fim = await queueStatus(batch);
