@@ -864,7 +864,7 @@ $('add-sess-btn').onclick = async () => {
   if(auto && !files.length){ st.textContent = 'escolha 1+ arquivos .zip/.rar (crus, com o .txt da URL dentro)'; return; }
   if(!auto && !pairs.length){ st.textContent = 'escolha o .zip de sessions'; return; }
   $('add-sess-btn').disabled = true;
-  let novas = 0, dist = 0; const lines = [];
+  let novas = 0, vps = 0; const lines = [];
   const total = auto ? files.length : pairs.length;
   try{
     for(let i = 0; i < total; i++){
@@ -877,11 +877,11 @@ $('add-sess-btn').onclick = async () => {
         const r = await api('/sessions/add?batch=' + encodeURIComponent(batch) + (link ? '&link=' + encodeURIComponent(link) : ''), { method:'POST', headers:{ 'content-type':'application/zip' }, body:f });
         j = { ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) };
       }
-      if(j.ok){ novas += (j.novas || 0); dist += (j.distribuido || 0); lines.push('<span class="badge ok">✓</span> ' + esc(f.name) + (j.link ? ' → <b>' + esc(j.link) + '</b>' : '') + ' (' + (j.novas || 0) + ' sessions)' + (j.aviso ? ' · <span class="badge warn">⚠</span> ' + esc(j.aviso) : '')); }
+      if(j.ok){ novas += (j.novas || 0); vps = Math.max(vps, j.vps || 0); lines.push('<span class="badge ok">✓</span> ' + esc(f.name) + (j.link ? ' → <b>' + esc(j.link) + '</b>' : '') + ' (' + (j.novas || 0) + ' sessions)' + (j.aviso ? ' · <span class="badge warn">⚠</span> ' + esc(j.aviso) : '')); }
       else lines.push('<span class="badge err">✗</span> ' + esc(f.name) + ': ' + esc(j.error || ('HTTP ' + j.status)) + (j.exemplos ? '<br><span class="muted" style="font-size:11px">extraído (' + j.entradas + '): ' + (j.exemplos.length ? esc(j.exemplos.slice(0,4).join(' | ')) : 'NADA — extração do rar falhou (rar sólido/criptografado?)') + '</span>' : ''));
       st.innerHTML = lines.join('<br>');
     }
-    st.innerHTML = '<span class="badge ok">+' + novas + ' sessions</span>' + (dist ? ' distribuídas em ' + dist + ' VPS' : '') + ' — a próxima onda já usa<br>' + lines.join('<br>');
+    st.innerHTML = '<span class="badge ok">+' + novas + ' sessions</span>' + (vps ? ' · distribuindo pras ' + vps + ' VPS (em background)' : '') + ' — a próxima onda já usa<br>' + lines.join('<br>');
     addPicker.reset();
     loadMonitor();
   }catch(e){ st.innerHTML = '<span class="badge err">erro</span> ' + esc(e.message); }

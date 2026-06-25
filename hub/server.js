@@ -479,10 +479,13 @@ const server = http.createServer(async (req, res) => {
       if (!novas.length) return send(res, 400, { error: 'nenhuma subsession <numero>-<n> encontrada no zip' });
       // distribui SÓ as novas pras VPS online do tenant (não re-empurra as que já estão lá)
       const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
-      if (!ativos.length) return send(res, 200, { ok: true, novas: novas.length, distribuido: 0, aviso: 'sessions subidas, mas nenhuma VPS online p/ distribuir' });
-      const ds = await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas);
-      const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
-      return send(res, 200, { ok: true, novas: novas.length, distribuido, agentes: ativos });
+      if (!ativos.length) return send(res, 200, { ok: true, novas: novas.length, vps: 0, aviso: 'sessions subidas, mas nenhuma VPS online p/ distribuir' });
+      // distribui em BACKGROUND (não bloqueia o HTTP): com a campanha rodando o
+      // agente está numa onda e o sync ficaria na fila atrás dela -> estouraria os
+      // 100s do Cloudflare (524). O job entra na fila do agente e roda quando ele
+      // sai da onda; a próxima onda usa as novas sessions.
+      distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas).catch(() => {});
+      return send(res, 200, { ok: true, novas: novas.length, vps: ativos.length, background: true });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   // importar archive CRU (zip/rar) — "repack no servidor": extrai, lê a URL do .txt
@@ -515,10 +518,11 @@ const server = http.createServer(async (req, res) => {
         const ex = entries.filter((e) => !/\.txt$/i.test(norm(e.name))).slice(0, 6).map((e) => norm(e.name));
         return send(res, 400, { error: 'nenhuma session <telefone>/<numero>-<n> no arquivo', link, entradas: entries.length, exemplos: ex });
       }
+      // distribui em BACKGROUND (não bloqueia o HTTP -> sem 524 do Cloudflare com a
+      // campanha rodando). O job entra na fila do agente; a próxima onda usa.
       const ativos = [...agents.values()].filter((a) => (a.tenant || 'default') === tenant && isOnline(a)).map((a) => a.id);
-      const ds = ativos.length ? await distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas) : { results: [] };
-      const distribuido = (ds.results || []).reduce((s, r) => s + (r.units || 0), 0);
-      return send(res, 200, { ok: true, link, novas: novas.length, distribuido });
+      if (ativos.length) distributeKind(batch, 'sessions', ativos, () => {}, undefined, novas).catch(() => {});
+      return send(res, 200, { ok: true, link, novas: novas.length, vps: ativos.length, background: ativos.length > 0 });
     } catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (p === '/file' && req.method === 'GET') {
